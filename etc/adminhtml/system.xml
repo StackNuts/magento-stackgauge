@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Config:etc/system_file.xsd">
+    <system>
+        <section id="stacknuts_stackgauge" translate="label" type="text" sortOrder="150" showInDefault="1" showInWebsite="0" showInStore="0">
+            <label>StackGauge</label>
+            <tab>advanced</tab>
+            <resource>StackNuts_StackGauge::config</resource>
+            <group id="general" translate="label" type="text" sortOrder="10" showInDefault="1" showInWebsite="0" showInStore="0">
+                <label>Agent</label>
+                <comment><![CDATA[
+                    This installation reports as a single site to the dashboard, so these settings apply
+                    to the whole Magento instance, not per store view.
+                ]]></comment>
+                <field id="enabled" translate="label comment" type="select" sortOrder="10" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Enabled</label>
+                    <comment>Master switch. Off, no cron job or plugin in this module sends anything - the "Test Ping" button below still works while off, so a site can be fully configured and verified before switching this on.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="endpoint_url" translate="label comment" type="text" sortOrder="20" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Dashboard Endpoint URL</label>
+                    <comment>Full ingest URL issued by the StackGauge dashboard, e.g. https://dashboard.example.com/api/ingest.</comment>
+                </field>
+                <field id="site_id" translate="label comment" type="text" sortOrder="30" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Site Identifier</label>
+                    <comment>Issued by the dashboard when this site is registered. Sent in every report so the dashboard knows which site it came from.</comment>
+                </field>
+                <field id="api_key" translate="label comment" type="obscure" sortOrder="40" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>API Key</label>
+                    <comment>Bearer token issued by the dashboard for this site. Stored encrypted.</comment>
+                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+                </field>
+                <field id="hmac_secret" translate="label comment" type="obscure" sortOrder="50" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>HMAC Secret</label>
+                    <comment>Shared secret used to sign every report (X-StackGauge-Signature header) so the dashboard can verify it wasn't tampered with in transit. Stored encrypted.</comment>
+                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+                </field>
+                <field id="reporters" translate="label comment" type="multiselect" sortOrder="60" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Enabled Reporters</label>
+                    <comment>Built-in data collected in each full report. Third-party reporters added by other modules aren't listed here and stay on regardless - see the README's "Pluggable reporters" section.</comment>
+                    <source_model>StackNuts\StackGauge\Model\System\Config\Source\ReporterList</source_model>
+                </field>
+                <field id="additional_log_files" translate="label comment" sortOrder="65" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Monitored Log Files</label>
+                    <comment>Files (relative to var/log) the Logs reporter shows a recent-lines tail for on the dashboard, each under whatever name you give it here. Pre-filled with the built-in System Log/Exception Log - remove either if you don't want it, or add more (e.g. a custom integration's own log). A file path (containing "/" or "..") is silently ignored.</comment>
+                    <frontend_model>StackNuts\StackGauge\Block\Adminhtml\System\Config\Form\Field\LogFiles</frontend_model>
+                    <backend_model>Magento\Config\Model\Config\Backend\Serialized\ArraySerialized</backend_model>
+                </field>
+                <field id="test_ping" translate="label" sortOrder="70" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Send Now</label>
+                    <frontend_model>StackNuts\StackGauge\Block\Adminhtml\System\Config\TestPing</frontend_model>
+                </field>
+            </group>
+            <group id="log" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="0" showInStore="0">
+                <label>Logging</label>
+                <field id="log_level" translate="label comment" type="select" sortOrder="10" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Log Level</label>
+                    <comment>Minimum severity written to var/log/stacknuts_stackgauge.log. "Off" disables logging entirely. Set to "Info" to have every report logged in full even before a dashboard endpoint exists to send it to - useful on its own, not just for debugging.</comment>
+                    <source_model>StackNuts\StackGauge\Model\System\Config\Source\LogLevel</source_model>
+                </field>
+            </group>
+        </section>
+    </system>
+</config>

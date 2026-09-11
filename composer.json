@@ -1,0 +1,46 @@
+{
+  "name": "stacknuts/magento-stackgauge",
+  "description": "Reports version, patch, and operational health data from a Magento store to a central StackGauge fleet dashboard, so an agency can see every client site's update/security posture at a glance.",
+  "type": "magento2-module",
+  "keywords": ["magento2", "fleet", "monitoring", "observability", "patch-management", "version-inventory"],
+  "homepage": "https://github.com/StackNuts/magento-stackgauge",
+  "authors": [
+    {
+      "name": "Phil Rowe",
+      "email": "stack.nuts@outlook.com"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/StackNuts/magento-stackgauge/issues",
+    "source": "https://github.com/StackNuts/magento-stackgauge"
+  },
+  "license": "PolyForm-Shield-1.0.0",
+  "require": {
+    "php": "~8.1.0||~8.2.0||~8.3.0||~8.4.0",
+    "magento/framework": ">=103.0 <104",
+    "magento/module-store": ">=100.0 <102",
+    "magento/module-config": ">=101.2 <102",
+    "magento/module-cron": ">=100.4 <101",
+    "magento/module-indexer": ">=100.4 <101",
+    "magento/module-backend": ">=102.0 <103",
+    "magento/module-page-cache": ">=100.4 <101",
+    "magento/module-advanced-search": ">=100.4 <101",
+    "colinmollenhour/credis": "^1.15"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.5 || ^11.5 || ^12.0"
+  },
+  "autoload": {
+    "files": [
+      "registration.php"
+    ],
+    "psr-4": {
+      "StackNuts\\StackGauge\\": ""
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "StackNuts\\StackGauge\\Test\\": "Test/"
+    }
+  }
+}

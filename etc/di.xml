@@ -1,0 +1,126 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+
+    <!-- Raw Monolog writer for var/log/stacknuts_stackgauge.log - always wrapped by the real
+         Logger\Logger class below, which is what actually gates on the admin-configured
+         Log Level before anything reaches this writer. -->
+    <virtualType name="StackNuts\StackGauge\Logger\Writer" type="Magento\Framework\Logger\Monolog">
+        <arguments>
+            <argument name="name" xsi:type="string">stacknuts_stackgauge</argument>
+            <argument name="handlers" xsi:type="array">
+                <item name="system" xsi:type="object">StackNuts\StackGauge\Logger\Handler</item>
+            </argument>
+        </arguments>
+    </virtualType>
+    <type name="StackNuts\StackGauge\Logger\Logger">
+        <arguments>
+            <argument name="writer" xsi:type="object">StackNuts\StackGauge\Logger\Writer</argument>
+        </arguments>
+    </type>
+
+    <!-- Every class below takes Psr\Log\LoggerInterface in its constructor but must get
+         THIS module's own gated logger, not Magento's shared system.log - a global
+         preference for Psr\Log\LoggerInterface would hijack logging for the entire
+         application, so each consumer is wired individually instead. -->
+    <!-- Built-in reporters. Third-party modules extend this same "reporters" array from
+         their own di.xml - see Api\ReporterInterface for the contract and README for a
+         worked example. -->
+    <type name="StackNuts\StackGauge\Model\ReporterPool">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+            <argument name="reporters" xsi:type="array">
+                <item name="core" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CoreReporter</item>
+                <item name="modules" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ModuleReporter</item>
+                <item name="composer" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ComposerReporter</item>
+                <item name="db_schema" xsi:type="object">StackNuts\StackGauge\Model\Reporter\DbSchemaReporter</item>
+                <item name="patches" xsi:type="object">StackNuts\StackGauge\Model\Reporter\PatchReporter</item>
+                <item name="indexers" xsi:type="object">StackNuts\StackGauge\Model\Reporter\IndexerReporter</item>
+                <item name="cron" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CronReporter</item>
+                <item name="cache" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CacheReporter</item>
+                <item name="security" xsi:type="object">StackNuts\StackGauge\Model\Reporter\SecurityReporter</item>
+                <item name="redis" xsi:type="object">StackNuts\StackGauge\Model\Reporter\RedisReporter</item>
+                <item name="search" xsi:type="object">StackNuts\StackGauge\Model\Reporter\SearchReporter</item>
+                <item name="rabbitmq" xsi:type="object">StackNuts\StackGauge\Model\Reporter\RabbitMqReporter</item>
+                <item name="disk" xsi:type="object">StackNuts\StackGauge\Model\Reporter\DiskSpaceReporter</item>
+                <item name="database" xsi:type="object">StackNuts\StackGauge\Model\Reporter\DatabaseReporter</item>
+                <item name="sales" xsi:type="object">StackNuts\StackGauge\Model\Reporter\SalesReporter</item>
+                <item name="logs" xsi:type="object">StackNuts\StackGauge\Model\Reporter\LogReporter</item>
+                <item name="reports" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ReportReporter</item>
+                <item name="store_views" xsi:type="object">StackNuts\StackGauge\Model\Reporter\StoreViewsReporter</item>
+                <item name="themes" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ThemeReporter</item>
+                <item name="payments" xsi:type="object">StackNuts\StackGauge\Model\Reporter\PaymentMethodsReporter</item>
+                <item name="php_extensions" xsi:type="object">StackNuts\StackGauge\Model\Reporter\PHPExtensionsReporter</item>
+                <item name="product_health" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ProductHealthReporter</item>
+                <item name="inventory" xsi:type="object">StackNuts\StackGauge\Model\Reporter\InventoryReporter</item>
+                <item name="customers" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CustomerSignalsReporter</item>
+                <item name="abandoned_carts" xsi:type="object">StackNuts\StackGauge\Model\Reporter\AbandonedCartsReporter</item>
+                <item name="catalog" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CatalogReporter</item>
+                <item name="coupons" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CouponsReporter</item>
+            </argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Model\Transport">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Model\ReportSender">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Model\Reporter\PatchReporter">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Cron\SendReport">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Cron\SendHeartbeat">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Cron\SendDailyReport">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Cron\SendConfigSync">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Observer\ConfigSyncOnSectionSave">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Model\MetricCatalogPool">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <type name="StackNuts\StackGauge\Plugin\App\MaintenanceModePlugin">
+        <arguments>
+            <argument name="logger" xsi:type="object">StackNuts\StackGauge\Logger\Logger</argument>
+        </arguments>
+    </type>
+
+    <!-- Instant heartbeat on maintenance-mode change (see Plugin\App\MaintenanceModePlugin). -->
+    <type name="Magento\Framework\App\MaintenanceMode">
+        <plugin name="stacknuts_stackgauge_maintenance_mode_heartbeat" type="StackNuts\StackGauge\Plugin\App\MaintenanceModePlugin" />
+    </type>
+
+    <type name="Magento\Framework\Console\CommandList">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="stacknuts_stackgauge_send" xsi:type="object">StackNuts\StackGauge\Console\Command\SendReportCommand</item>
+            </argument>
+        </arguments>
+    </type>
+</config>

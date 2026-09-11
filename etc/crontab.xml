@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Cron:etc/crontab.xsd">
+    <group id="stackgauge">
+        <job name="stacknuts_stackgauge_send_report" instance="StackNuts\StackGauge\Cron\SendReport" method="execute">
+            <config_path>crontab/stackgauge/jobs/stacknuts_stackgauge_send_report/schedule/cron_expr</config_path>
+        </job>
+        <job name="stacknuts_stackgauge_send_heartbeat" instance="StackNuts\StackGauge\Cron\SendHeartbeat" method="execute">
+            <config_path>crontab/stackgauge/jobs/stacknuts_stackgauge_send_heartbeat/schedule/cron_expr</config_path>
+        </job>
+        <job name="stacknuts_stackgauge_send_daily_report" instance="StackNuts\StackGauge\Cron\SendDailyReport" method="execute">
+            <config_path>crontab/stackgauge/jobs/stacknuts_stackgauge_send_daily_report/schedule/cron_expr</config_path>
+        </job>
+        <job name="stacknuts_stackgauge_send_config_sync" instance="StackNuts\StackGauge\Cron\SendConfigSync" method="execute">
+            <config_path>crontab/stackgauge/jobs/stacknuts_stackgauge_send_config_sync/schedule/cron_expr</config_path>
+        </job>
+    </group>
+</config>

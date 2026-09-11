@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Store:etc/config.xsd">
+    <default>
+        <crontab>
+            <stackgauge>
+                <jobs>
+                    <stacknuts_stackgauge_send_report>
+                        <schedule>
+                            <cron_expr>0 * * * *</cron_expr>
+                        </schedule>
+                    </stacknuts_stackgauge_send_report>
+                    <stacknuts_stackgauge_send_heartbeat>
+                        <schedule>
+                            <cron_expr>*/5 * * * *</cron_expr>
+                        </schedule>
+                    </stacknuts_stackgauge_send_heartbeat>
+                    <stacknuts_stackgauge_send_daily_report>
+                        <schedule>
+                            <cron_expr>0 2 * * *</cron_expr>
+                        </schedule>
+                    </stacknuts_stackgauge_send_daily_report>
+                    <stacknuts_stackgauge_send_config_sync>
+                        <schedule>
+                            <cron_expr>30 2 * * *</cron_expr>
+                        </schedule>
+                    </stacknuts_stackgauge_send_config_sync>
+                </jobs>
+            </stackgauge>
+        </crontab>
+        <stacknuts_stackgauge>
+            <general>
+                <enabled>0</enabled>
+                <!-- Must mirror Model\System\Config\Source\ReporterList::CODES - this is what
+                a brand-new install's "Enabled Reporters" multiselect starts pre-checked
+                with, since a multiselect field with no default here means fully empty (no
+                reporters at all) rather than "all", regardless of what CODES declares. -->
+                <reporters>core,modules,composer,db_schema,patches,inventory,customers,abandoned_carts,indexers,cron,cache,security,redis,search,rabbitmq,disk,database,sales,catalog,coupons,logs,reports,store_views,themes,payments,php_extensions,product_health</reporters>
+                <additional_log_files><![CDATA[{"_1000000000000_001":{"name":"System Log","file":"system.log"},"_1000000000000_002":{"name":"Exception Log","file":"exception.log"}}]]></additional_log_files>
+            </general>
+            <log>
+                <log_level>300</log_level>
+            </log>
+        </stacknuts_stackgauge>
+    </default>
+</config>

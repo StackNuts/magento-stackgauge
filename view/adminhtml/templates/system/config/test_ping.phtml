@@ -1,0 +1,23 @@
+<?php
+/**
+ * Copyright © StackNuts. All rights reserved.
+ * See LICENSE for license details.
+ */
+/** @var \StackNuts\StackGauge\Block\Adminhtml\System\Config\TestPing $block */
+/** @var \Magento\Framework\Escaper $escaper */
+?>
+<button class="scalable" type="button" id="<?= $escaper->escapeHtmlAttr($block->getHtmlId()) ?>"
+        data-mage-init='{"StackNuts_StackGauge/js/test-ping": {
+            "url": "<?= $escaper->escapeUrl($block->getAjaxUrl()) ?>",
+            "elementId": "<?= $escaper->escapeHtmlAttr($block->getHtmlId()) ?>"
+        }}'>
+    <span id="<?= $escaper->escapeHtmlAttr($block->getHtmlId()) ?>_result">
+        <?= $escaper->escapeHtml(__('Send Data Now')) ?>
+    </span>
+</button>
+<p class="note">
+    <span><?= $escaper->escapeHtml(__(
+        'Save the configuration above first. This sends a heartbeat, a full report, and a config sync to the dashboard immediately, '
+        . 'proving the endpoint URL and API key actually work end to end.'
+    )) ?></span>
+</p>
