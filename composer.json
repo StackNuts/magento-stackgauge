@@ -14,7 +14,7 @@
     "issues": "https://github.com/StackNuts/magento-stackgauge/issues",
     "source": "https://github.com/StackNuts/magento-stackgauge"
   },
-  "license": "PolyForm-Shield-1.0.0",
+  "license": "proprietary",
   "require": {
     "php": "~8.1.0||~8.2.0||~8.3.0||~8.4.0",
     "magento/framework": ">=103.0 <104",
