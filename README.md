@@ -187,11 +187,11 @@ entry virtually every Magento install already has.
 ## CLI
 
 ```bash
-bin/magento stackgauge:send --dry-run        # print the assembled payload, don't send
-bin/magento stackgauge:send                  # send now (skipped if "Enabled" is off)
-bin/magento stackgauge:send --force          # send now regardless of "Enabled"
-bin/magento stackgauge:send --cadence=daily  # send the daily-cadence reporters instead of hourly
-bin/magento stackgauge:send --config-sync    # send the trackable-metric catalog instead of a full report
+bin/magento stackgauge:send                  # send everything now: every hourly + daily slot and the config sync
+bin/magento stackgauge:send --dry-run        # list which reporters each run would carry, send nothing
+bin/magento stackgauge:send hourly:1 --dry-run  # print one run's full payload
+bin/magento stackgauge:send daily            # all daily slots (also: hourly, hourly:N, daily:N, current, config)
+bin/magento stackgauge:send --force          # send regardless of "Enabled"
 ```
 
 Set **Log Level** to "Info" to have every real send attempt (cron, CLI, **Send Now**) log its

@@ -10,6 +10,7 @@ namespace StackNuts\StackGauge\Model\Reporter;
 
 use Magento\Framework\App\ResourceConnection;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
@@ -27,7 +28,7 @@ use Magento\Framework\DB\Sql\Expression;
  * produce false positives every night just after midnight. The hourly breakdown is a separate
  * grouped SQL aggregate, so it stays a plain descriptive field rather than a trackable metric.
  */
-class SalesReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface
+class SalesReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use CommerceSectionTrait;
 
@@ -218,5 +219,13 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
         }
 
         return $rows;
+    }
+
+    /**
+     * Run 1 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 1;
     }
 }

@@ -12,6 +12,7 @@ use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Driver\File;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
@@ -26,7 +27,7 @@ use Throwable;
  * filesystem on a typical install, but not guaranteed - media in particular is sometimes on
  * a separate volume - so each is checked independently.
  */
-class DiskSpaceReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface
+class DiskSpaceReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use HealthSectionTrait;
 
@@ -210,5 +211,13 @@ class DiskSpaceReporter implements ReporterInterface, MetricCatalogInterface, De
             'total_bytes' => $this->field->number('Total Bytes', $totalBytes),
             'free_percent' => $freePercentField,
         ]);
+    }
+
+    /**
+     * Run 2 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 2;
     }
 }

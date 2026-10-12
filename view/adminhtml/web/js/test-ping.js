@@ -24,7 +24,7 @@ define([
         _test: function () {
             var resultEl = $('#' + this.options.elementId + '_result');
 
-            resultEl.text($.mage.__('Testing...'));
+            resultEl.text($.mage.__('Sending...'));
 
             $.ajax({
                 url: this.options.url,

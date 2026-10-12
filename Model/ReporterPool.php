@@ -56,9 +56,10 @@ class ReporterPool
      * collectOne().
      *
      * @param string $cadence One of Api\DeclaresCadenceInterface::CADENCE_*.
+     * @param Slot|null $slot Only reporters belonging to this run; null collects the whole tier.
      * @return array<string, array<string, mixed>>
      */
-    public function collect(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY): array
+    public function collect(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): array
     {
         $disabledCodes = $this->config->getDisabledReporterCodes();
         $result = [];
@@ -74,6 +75,10 @@ class ReporterPool
                 : DeclaresCadenceInterface::CADENCE_HOURLY;
 
             if ($reporterCadence !== $cadence) {
+                continue;
+            }
+
+            if ($slot !== null && !$slot->includes($reporter)) {
                 continue;
             }
 

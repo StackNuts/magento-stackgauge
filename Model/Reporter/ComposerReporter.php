@@ -10,6 +10,7 @@ namespace StackNuts\StackGauge\Model\Reporter;
 
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
@@ -18,7 +19,7 @@ use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
 use StackNuts\StackGauge\Model\Util\ComposerLockReader;
 
-class ComposerReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface
+class ComposerReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use DailyCadenceTrait;
     use PlatformSectionTrait;
@@ -236,5 +237,13 @@ class ComposerReporter implements ReporterInterface, DeclaresCadenceInterface, D
         }
 
         return false;
+    }
+
+    /**
+     * Run 1 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 1;
     }
 }

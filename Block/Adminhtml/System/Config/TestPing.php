@@ -12,9 +12,9 @@ use Magento\Config\Block\System\Config\Form\Field;
 use Magento\Framework\Data\Form\Element\AbstractElement;
 
 /**
- * Renders the "Test Ping" button. Save the config first, then this checks connectivity and,
- * on success, sends one full report immediately - so the dashboard has real data without
- * waiting for the next hourly cron tick.
+ * Renders the "Send All Data Now" button. Save the config first, then it
+ * sends every report slot immediately - so the dashboard has real data without
+ * waiting for the cron ticks.
  */
 class TestPing extends Field
 {

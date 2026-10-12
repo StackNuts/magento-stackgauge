@@ -41,20 +41,23 @@ class PayloadBuilder
      * The full-collection report envelope for the given cadence tier.
      *
      * @param string $cadence One of Api\DeclaresCadenceInterface::CADENCE_*.
+     * @param Slot|null $slot The run within the tier; null means the whole tier.
      * @return array<string, mixed>
      */
-    public function build(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY): array
+    public function build(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): array
     {
         return [
             'type' => 'full',
             'cadence' => $cadence,
+            'slot' => $slot?->index,
+            'slot_count' => $slot?->count,
             'schema_version' => self::SCHEMA_VERSION,
             'module_version' => $this->getModuleVersion(),
             'generated_at' => (new DateTimeImmutable())->format(DATE_ATOM),
             'site' => [
                 'identifier' => $this->config->getSiteId(),
             ],
-            'reporters' => $this->reporterPool->collect($cadence),
+            'reporters' => $this->reporterPool->collect($cadence, $slot),
         ];
     }
 

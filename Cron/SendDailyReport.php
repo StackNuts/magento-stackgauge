@@ -11,6 +11,7 @@ namespace StackNuts\StackGauge\Cron;
 use Psr\Log\LoggerInterface;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Model\ReportSender;
+use StackNuts\StackGauge\Model\SlotResolver;
 use Throwable;
 
 /**
@@ -24,11 +25,15 @@ class SendDailyReport
 {
     /**
      * @param ReportSender $reportSender
+     * @param SlotResolver $slotResolver
      * @param LoggerInterface $logger
+     * @param int $slot Which daily slot this job collects - fixed per cron job, not read from the clock.
      */
     public function __construct(
         private readonly ReportSender $reportSender,
-        private readonly LoggerInterface $logger
+        private readonly SlotResolver $slotResolver,
+        private readonly LoggerInterface $logger,
+        protected readonly int $slot = 0
     ) {
     }
 
@@ -38,7 +43,7 @@ class SendDailyReport
     public function execute(): void
     {
         try {
-            $this->reportSender->send(DeclaresCadenceInterface::CADENCE_DAILY);
+            $this->reportSender->send(DeclaresCadenceInterface::CADENCE_DAILY, $this->slotResolver->forIndex(DeclaresCadenceInterface::CADENCE_DAILY, $this->slot));
         } catch (Throwable $e) {
             $this->logger->critical('StackGauge: SendDailyReport cron job failed: ' . $e->getMessage(), ['exception' => $e]);
         }

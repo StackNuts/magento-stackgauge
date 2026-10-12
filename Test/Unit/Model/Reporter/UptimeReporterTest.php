@@ -21,6 +21,7 @@ class UptimeReporterTest extends TestCase
      *     attempted: bool,
      *     reachable: bool,
      *     http_status: int,
+     *     response_time_ms: int,
      *     looks_blocked: bool,
      *     looks_like_error_page: bool
      * } $probeResult
@@ -39,12 +40,14 @@ class UptimeReporterTest extends TestCase
             'attempted' => true,
             'reachable' => true,
             'http_status' => 200,
+            'response_time_ms' => 350,
             'looks_blocked' => false,
             'looks_like_error_page' => false,
         ])->getStatus()['general']->getFields();
 
         $this->assertSame(1, $fields['reachable']->getValue());
         $this->assertSame(200, $fields['http_status']->getValue());
+        $this->assertSame(350, $fields['response_time_ms']->getValue());
         $this->assertFalse($fields['looks_blocked']->getValue());
         $this->assertFalse($fields['looks_like_error_page']->getValue());
     }
@@ -55,6 +58,7 @@ class UptimeReporterTest extends TestCase
             'attempted' => true,
             'reachable' => false,
             'http_status' => 0,
+            'response_time_ms' => 0,
             'looks_blocked' => false,
             'looks_like_error_page' => false,
         ])->getStatus()['general']->getFields();
@@ -68,11 +72,12 @@ class UptimeReporterTest extends TestCase
             'attempted' => false,
             'reachable' => false,
             'http_status' => 0,
+            'response_time_ms' => 0,
             'looks_blocked' => false,
             'looks_like_error_page' => false,
         ])->getTrackableMetrics();
 
-        $this->assertCount(1, $metrics);
+        $this->assertCount(2, $metrics);
         $this->assertSame('uptime.reachable', $metrics[0]->getMetricKey());
         $this->assertSame('min', $metrics[0]->getAggregation());
         $this->assertSame('lt', $metrics[0]->getDefaultOperator());
@@ -85,5 +90,21 @@ class UptimeReporterTest extends TestCase
         $reporter = new UptimeReporter($probe, new Field(), new Section());
 
         $this->assertSame('health', $reporter->getSection());
+    }
+
+    public function testDeclaresTheResponseTimeTrackableMetric(): void
+    {
+        $metrics = $this->reporter([
+            'attempted' => false,
+            'reachable' => false,
+            'http_status' => 0,
+            'response_time_ms' => 0,
+            'looks_blocked' => false,
+            'looks_like_error_page' => false,
+        ])->getTrackableMetrics();
+
+        $this->assertSame('uptime.response_time_ms', $metrics[1]->getMetricKey());
+        $this->assertSame('avg', $metrics[1]->getAggregation());
+        $this->assertSame('gt', $metrics[1]->getDefaultOperator());
     }
 }

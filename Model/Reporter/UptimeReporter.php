@@ -31,6 +31,7 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
 
     private const SCHEMA_VERSION = '1.0';
     private const METRIC_REACHABLE = 'uptime.reachable';
+    private const METRIC_RESPONSE_TIME = 'uptime.response_time_ms';
 
     /**
      * @param StorefrontProbe $storefrontProbe
@@ -94,6 +95,12 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
                 severity: $result['reachable'] ? Field::SEVERITY_OK : Field::SEVERITY_CRITICAL
             ),
             'http_status' => $this->field->number('HTTP Status', $result['http_status']),
+            'response_time_ms' => $this->field->trackableNumber(
+                'Response Time (ms)',
+                $result['response_time_ms'],
+                self::METRIC_RESPONSE_TIME,
+                MetricDefinition::AGGREGATION_AVG
+            ),
             'looks_blocked' => $this->field->bool('Looks Blocked', $result['looks_blocked'], criticalWhen: true),
             'looks_like_error_page' => $this->field->bool(
                 'Looks Like Error Page',
@@ -122,6 +129,17 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
                 null,
                 description: 'The storefront was unreachable at the last check.',
                 impact: 'Customers cannot reach the store.'
+            ),
+            new MetricDefinition(
+                self::METRIC_RESPONSE_TIME,
+                'Uptime: Homepage Response Time (ms)',
+                MetricDefinition::AGGREGATION_AVG,
+                MetricDefinition::OPERATOR_GT,
+                2000,
+                60,
+                null,
+                description: 'The storefront homepage took longer than the threshold to respond, on average.',
+                impact: 'Slow responses hurt conversion and search ranking, and often precede an outage.'
             ),
         ];
     }

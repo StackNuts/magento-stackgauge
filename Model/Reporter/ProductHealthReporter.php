@@ -11,10 +11,11 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\CommerceSectionTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
 
-class ProductHealthReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface
+class ProductHealthReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use DailyCadenceTrait;
     use CommerceSectionTrait;
@@ -126,5 +127,13 @@ class ProductHealthReporter implements ReporterInterface, DeclaresCadenceInterfa
                 impact: 'Customers cannot buy products without a price.'
             ),
         ];
+    }
+
+    /**
+     * Run 1 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 1;
     }
 }

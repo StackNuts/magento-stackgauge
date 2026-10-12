@@ -12,17 +12,15 @@ use Magento\Backend\App\Action;
 use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\Json;
 use Magento\Framework\Controller\Result\JsonFactory;
-use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Model\Config;
-use StackNuts\StackGauge\Model\ReportSender;
+use StackNuts\StackGauge\Model\ReportRunner;
 use StackNuts\StackGauge\Model\HeartbeatSender;
 use Throwable;
 
 /**
- * Verifies the endpoint URL/API key by sending one real full report of every cadence tier
- * (not just hourly, which would omit daily-only reporters), regardless of the "Enabled"
- * toggle, since an admin testing the connection is likely still mid-setup. Also fires a
- * config-sync alongside the full reports, doubling as a manual "sync now" affordance.
+ * Verifies the endpoint URL/API key by sending every run the cron jobs send (each hourly and
+ * daily slot plus the config sync, via ReportRunner), regardless of the "Enabled" toggle, since
+ * an admin testing the connection is likely still mid-setup. Doubles as a manual "sync now".
  */
 class TestPing extends Action implements HttpPostActionInterface
 {
@@ -32,14 +30,14 @@ class TestPing extends Action implements HttpPostActionInterface
      * @param Action\Context $context
      * @param JsonFactory $jsonFactory
      * @param Config $config
-     * @param ReportSender $reportSender
+     * @param ReportRunner $reportRunner
      * @param HeartbeatSender $heartbeatSender
      */
     public function __construct(
         Action\Context $context,
         private readonly JsonFactory $jsonFactory,
         private readonly Config $config,
-        private readonly ReportSender $reportSender,
+        private readonly ReportRunner $reportRunner,
         private readonly HeartbeatSender $heartbeatSender
     ) {
         parent::__construct($context);
@@ -62,9 +60,22 @@ class TestPing extends Action implements HttpPostActionInterface
         }
 
         try {
-            $hourlySent = $this->reportSender->sendNow(DeclaresCadenceInterface::CADENCE_HOURLY);
-            $dailySent = $this->reportSender->sendNow(DeclaresCadenceInterface::CADENCE_DAILY);
-            $reportSent = $hourlySent && $dailySent;
+            $this->heartbeatSender->sendNow();
+        // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
+        } catch (Throwable) {
+            // best-effort, don't block the report result on heartbeat
+        }
+
+        $sent = 0;
+        $failed = [];
+        try {
+            foreach ($this->reportRunner->all() as $run) {
+                if ($this->reportRunner->send($run, true)) {
+                    $sent++;
+                } else {
+                    $failed[] = $run->label();
+                }
+            }
         } catch (Throwable $e) {
             return $result->setData([
                 'success' => false,
@@ -72,31 +83,19 @@ class TestPing extends Action implements HttpPostActionInterface
             ]);
         }
 
-        try {
-            $this->heartbeatSender->sendNow();
-        // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
-        } catch (Throwable) {
-            // best-effort, don't block the report result on heartbeat
-        }
-
-        try {
-            $this->reportSender->sendConfigSyncNow();
-        // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
-        } catch (Throwable) {
-            // best-effort, don't block the report result on config-sync
-        }
-
-        if ($reportSent) {
+        if ($failed === []) {
             return $result->setData([
                 'success' => true,
-                'message' => __('Success! A full report was sent to the dashboard.')->render(),
+                'message' => __('Success! %1 reports (every hourly and daily slot, plus the config sync) were sent.', $sent)
+                    ->render(),
             ]);
         }
 
         return $result->setData([
             'success' => false,
             'message' => __(
-                'The dashboard did not accept the report. Check var/log/stacknuts_stackgauge.log for details.'
+                'The dashboard did not accept: %1. Check var/log/stacknuts_stackgauge.log for details.',
+                implode(', ', $failed)
             )->render(),
         ]);
     }

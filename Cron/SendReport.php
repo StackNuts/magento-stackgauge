@@ -9,7 +9,9 @@ declare(strict_types=1);
 namespace StackNuts\StackGauge\Cron;
 
 use Psr\Log\LoggerInterface;
+use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Model\ReportSender;
+use StackNuts\StackGauge\Model\SlotResolver;
 use Throwable;
 
 /**
@@ -22,10 +24,12 @@ class SendReport
 {
     /**
      * @param ReportSender $reportSender
+     * @param SlotResolver $slotResolver
      * @param LoggerInterface $logger
      */
     public function __construct(
         private readonly ReportSender $reportSender,
+        private readonly SlotResolver $slotResolver,
         private readonly LoggerInterface $logger
     ) {
     }
@@ -36,7 +40,7 @@ class SendReport
     public function execute(): void
     {
         try {
-            $this->reportSender->send();
+            $this->reportSender->send(DeclaresCadenceInterface::CADENCE_HOURLY, $this->slotResolver->currentHourly());
         } catch (Throwable $e) {
             $this->logger->critical('StackGauge: SendReport cron job failed: ' . $e->getMessage(), ['exception' => $e]);
         }

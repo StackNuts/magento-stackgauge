@@ -15,6 +15,7 @@ use Magento\Framework\Module\ModuleListInterface;
 use Magento\Framework\Serialize\Serializer\Json;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
@@ -40,7 +41,7 @@ use Throwable;
  * last-resort convention some modules use. A module matching none of these reports version
  * "unknown" rather than guessing.
  */
-class ModuleReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface
+class ModuleReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use DailyCadenceTrait;
     use PlatformSectionTrait;
@@ -272,5 +273,13 @@ class ModuleReporter implements ReporterInterface, DeclaresCadenceInterface, Dec
         }
 
         return $versions;
+    }
+
+    /**
+     * Run 1 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 1;
     }
 }

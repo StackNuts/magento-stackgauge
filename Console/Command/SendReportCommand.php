@@ -8,34 +8,34 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Console\Command;
 
-use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
-use StackNuts\StackGauge\Model\ReportSender;
+use InvalidArgumentException;
 use StackNuts\StackGauge\Model\HeartbeatSender;
+use StackNuts\StackGauge\Model\ReportRunner;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * Manual verification without needing an admin Test Ping click: --dry-run prints the
- * assembled payload without sending; --force sends even if "Enabled" is off; --config-sync
- * builds/sends the metric-catalog payload instead of a full report; --cadence picks which
- * reporter tier a (non-config-sync) report covers.
+ * Sends (or dry-runs) the same runs the cron jobs send. The target picks which: "all" (default -
+ * every hourly and daily slot plus the config sync), "hourly", "daily", one slot such as
+ * "hourly:1" or "daily:0", "current" (the hourly slot the clock is in now) or "config".
+ * --dry-run builds without sending; --force ignores the "Enabled" toggle.
  */
 class SendReportCommand extends Command
 {
+    private const ARGUMENT_TARGET = 'target';
     private const OPTION_DRY_RUN = 'dry-run';
     private const OPTION_FORCE = 'force';
-    private const OPTION_CONFIG_SYNC = 'config-sync';
-    private const OPTION_CADENCE = 'cadence';
 
     /**
-     * @param ReportSender $reportSender
+     * @param ReportRunner $reportRunner
      * @param HeartbeatSender $heartbeatSender
      * @param string|null $name
      */
     public function __construct(
-        private readonly ReportSender $reportSender,
+        private readonly ReportRunner $reportRunner,
         private readonly HeartbeatSender $heartbeatSender,
         ?string $name = null
     ) {
@@ -43,107 +43,93 @@ class SendReportCommand extends Command
     }
 
     /**
-     * Declares the command name, description, and CLI options.
+     * Declares the command name, description, argument and options.
      */
     protected function configure(): void
     {
         $this->setName('stackgauge:send')
-            ->setDescription('Build and send a StackGauge status report')
-            ->addOption(
-                self::OPTION_DRY_RUN,
-                null,
-                InputOption::VALUE_NONE,
-                'Print the assembled payload as JSON without sending it'
+            ->setDescription('Send StackGauge reports to the dashboard (all, hourly[:N], daily[:N], current, config)')
+            ->addArgument(
+                self::ARGUMENT_TARGET,
+                InputArgument::OPTIONAL,
+                'all | hourly | daily | hourly:N | daily:N | current | config',
+                ReportRunner::TARGET_ALL
             )
+            ->addOption(self::OPTION_DRY_RUN, null, InputOption::VALUE_NONE, 'Build the payload(s) without sending')
             ->addOption(
                 self::OPTION_FORCE,
                 null,
                 InputOption::VALUE_NONE,
                 'Send even if StackGauge is disabled in Stores > Configuration > Advanced > StackGauge'
-            )
-            ->addOption(
-                self::OPTION_CONFIG_SYNC,
-                null,
-                InputOption::VALUE_NONE,
-                'Build/send the config-sync payload (trackable metric catalog + defaults) instead of a full report'
-            )
-            ->addOption(
-                self::OPTION_CADENCE,
-                null,
-                InputOption::VALUE_REQUIRED,
-                'Which reporter cadence tier to build/send: hourly or daily',
-                DeclaresCadenceInterface::CADENCE_HOURLY
             );
 
         parent::configure();
     }
 
     /**
-     * Builds/sends a full status report (or dry-runs it) per the --dry-run/--force/--cadence options.
+     * Builds or sends each run the target resolves to.
      *
      * @param InputInterface $input
      * @param OutputInterface $output
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        if ($input->getOption(self::OPTION_CONFIG_SYNC)) {
-            return $this->executeConfigSync($input, $output);
+        try {
+            $runs = $this->reportRunner->resolve((string)$input->getArgument(self::ARGUMENT_TARGET));
+        } catch (InvalidArgumentException $e) {
+            $output->writeln('<error>' . $e->getMessage() . '</error>');
+            return Command::INVALID;
         }
-
-        $cadence = (string)$input->getOption(self::OPTION_CADENCE);
 
         if ($input->getOption(self::OPTION_DRY_RUN)) {
-            $payload = $this->reportSender->buildPayload($cadence);
-            $output->writeln((string)json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            return Command::SUCCESS;
+            return $this->dryRun($runs, $output);
         }
+
         $this->heartbeatSender->sendNow();
 
-        $sent = $input->getOption(self::OPTION_FORCE)
-            ? $this->reportSender->sendNow($cadence)
-            : $this->reportSender->send($cadence);
-
-        if ($sent) {
-            $output->writeln('<info>Report sent.</info>');
-            return Command::SUCCESS;
+        $failed = 0;
+        foreach ($runs as $run) {
+            if ($this->reportRunner->send($run, (bool)$input->getOption(self::OPTION_FORCE))) {
+                $output->writeln(sprintf('<info>%-10s sent</info>', $run->label()));
+                continue;
+            }
+            $failed++;
+            $output->writeln(sprintf('<error>%-10s not sent</error>', $run->label()));
         }
 
-        $output->writeln(
-            '<error>Report not sent - check that StackGauge is enabled (or pass --force) and that the endpoint '
-            . 'URL / API key are configured. See var/log/stacknuts_stackgauge.log for details.</error>'
-        );
-        return Command::FAILURE;
+        if ($failed > 0) {
+            $output->writeln(
+                '<error>Check that StackGauge is enabled (or pass --force) and that the endpoint URL / API key are '
+                . 'configured. See var/log/stacknuts_stackgauge.log for details.</error>'
+            );
+            return Command::FAILURE;
+        }
+
+        return Command::SUCCESS;
     }
 
     /**
-     * Builds/sends the config-sync payload (or dry-runs it) per the --dry-run/--force options.
+     * One run prints its full JSON payload; several print which reporters each would carry.
      *
-     * @param InputInterface $input
+     * @param \StackNuts\StackGauge\Model\ReportRun[] $runs
      * @param OutputInterface $output
      */
-    private function executeConfigSync(InputInterface $input, OutputInterface $output): int
+    private function dryRun(array $runs, OutputInterface $output): int
     {
-        if ($input->getOption(self::OPTION_DRY_RUN)) {
-            $payload = $this->reportSender->buildConfigSync();
+        if (count($runs) === 1) {
+            $payload = $this->reportRunner->build($runs[0]);
             $output->writeln((string)json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
             return Command::SUCCESS;
         }
 
-        $this->heartbeatSender->sendNow();
-
-        $sent = $input->getOption(self::OPTION_FORCE)
-            ? $this->reportSender->sendConfigSyncNow()
-            : $this->reportSender->sendConfigSync();
-
-        if ($sent) {
-            $output->writeln('<info>Config sync sent.</info>');
-            return Command::SUCCESS;
+        foreach ($runs as $run) {
+            $payload = $this->reportRunner->build($run);
+            $names = $run->isConfigSync()
+                ? [count($payload['metrics'] ?? []) . ' metric(s)']
+                : array_keys($payload['reporters'] ?? []);
+            $output->writeln(sprintf('%-10s %s', $run->label(), implode(', ', $names)));
         }
 
-        $output->writeln(
-            '<error>Config sync not sent - check that StackGauge is enabled (or pass --force) and that the endpoint '
-            . 'URL / API key are configured. See var/log/stacknuts_stackgauge.log for details.</error>'
-        );
-        return Command::FAILURE;
+        return Command::SUCCESS;
     }
 }

@@ -29,6 +29,7 @@ class HeartbeatSenderTest extends TestCase
             'attempted' => true,
             'reachable' => true,
             'http_status' => 200,
+            'response_time_ms' => 350,
             'looks_blocked' => false,
             'looks_like_error_page' => false,
         ];

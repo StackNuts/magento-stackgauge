@@ -12,6 +12,7 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Encryption\EncryptorInterface;
 use Magento\Framework\Serialize\Serializer\Json;
 use Magento\Store\Model\ScopeInterface;
+use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 
 /**
  * Reads StackGauge's own store-scoped system config (Stores > Configuration > Advanced >
@@ -27,6 +28,8 @@ class Config
     private const XML_PATH_DISABLED_REPORTERS = 'stacknuts_stackgauge/general/disabled_reporters';
     private const XML_PATH_ADDITIONAL_LOG_FILES = 'stacknuts_stackgauge/general/additional_log_files';
     private const XML_PATH_LOG_LEVEL = 'stacknuts_stackgauge/log/log_level';
+    private const XML_PATH_SLOTS = 'stacknuts_stackgauge/cadence/%s_slots';
+    private const MAX_SLOTS = 12;
     private const XML_PATH_SELF_PROBE_ENABLED = 'stacknuts_stackgauge/general/self_probe_enabled';
 
     /**
@@ -129,6 +132,19 @@ class Config
         );
 
         return array_values(array_filter(array_map('trim', explode(',', $value))));
+    }
+
+    /**
+     * How many evenly spaced runs a cadence tier is split into (1 to 12).
+     *
+     * @param string $cadence One of DeclaresCadenceInterface::CADENCE_*.
+     */
+    public function getSlotCount(string $cadence): int
+    {
+        $key = $cadence === DeclaresCadenceInterface::CADENCE_DAILY ? 'daily' : 'hourly';
+        $value = (int)$this->scopeConfig->getValue(sprintf(self::XML_PATH_SLOTS, $key));
+
+        return min(self::MAX_SLOTS, max(1, $value));
     }
 
     /**

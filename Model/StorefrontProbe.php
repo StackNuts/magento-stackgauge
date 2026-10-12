@@ -92,6 +92,7 @@ class StorefrontProbe
      *     attempted: bool,
      *     reachable: bool,
      *     http_status: int,
+     *     response_time_ms: int,
      *     looks_blocked: bool,
      *     looks_like_error_page: bool
      * }
@@ -108,12 +109,20 @@ class StorefrontProbe
                 CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
                 CURLOPT_TIMEOUT => self::TOTAL_TIMEOUT_SECONDS,
             ]);
+            $startedAt = microtime(true);
             $this->curl->get($baseUrl);
+            $responseTimeMs = (int)round((microtime(true) - $startedAt) * 1000);
 
             $status = $this->curl->getStatus();
             $body = (string)$this->curl->getBody();
 
-            return $this->result(attempted: true, reachable: $status > 0, status: $status, body: $body);
+            return $this->result(
+                attempted: true,
+                reachable: $status > 0,
+                status: $status,
+                body: $body,
+                responseTimeMs: $status > 0 ? $responseTimeMs : 0
+            );
         } catch (Throwable) {
             // A connection failure (DNS, refused, timeout, ...) is itself a meaningful result,
             // not a reporter failure to swallow - "couldn't even connect" is exactly what this
@@ -191,20 +200,29 @@ class StorefrontProbe
      * @param bool $reachable
      * @param int $status
      * @param string $body
+     * @param int $responseTimeMs Wall time for the whole request (connect through full body) -
+     *     0 when the probe wasn't attempted or got no HTTP response at all.
      * @return array{
      *     attempted: bool,
      *     reachable: bool,
      *     http_status: int,
+     *     response_time_ms: int,
      *     looks_blocked: bool,
      *     looks_like_error_page: bool
      * }
      */
-    private function result(bool $attempted, bool $reachable, int $status, string $body): array
-    {
+    private function result(
+        bool $attempted,
+        bool $reachable,
+        int $status,
+        string $body,
+        int $responseTimeMs = 0
+    ): array {
         return [
             'attempted' => $attempted,
             'reachable' => $reachable,
             'http_status' => $status,
+            'response_time_ms' => $responseTimeMs,
             'looks_blocked' => $this->containsAny($body, self::CHALLENGE_MARKERS),
             'looks_like_error_page' => str_contains($body, self::MAGENTO_ERROR_MARKER),
         ];

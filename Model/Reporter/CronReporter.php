@@ -10,6 +10,7 @@ namespace StackNuts\StackGauge\Model\Reporter;
 
 use Magento\Cron\Model\ResourceModel\Schedule\CollectionFactory;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
@@ -22,7 +23,7 @@ use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
  * the job's cron expression; if cron has stopped running, that row's scheduled_at is simply
  * in the past, and the dashboard (not this reporter) decides what counts as overdue.
  */
-class CronReporter implements ReporterInterface, DeclaresSectionInterface
+class CronReporter implements ReporterInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use HealthSectionTrait;
 
@@ -160,5 +161,13 @@ class CronReporter implements ReporterInterface, DeclaresSectionInterface
                 keyName: 'job_code'
             ),
         ];
+    }
+
+    /**
+     * Run 2 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 2;
     }
 }

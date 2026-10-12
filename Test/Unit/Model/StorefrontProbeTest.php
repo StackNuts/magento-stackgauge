@@ -42,6 +42,7 @@ class StorefrontProbeTest extends TestCase
         $this->assertTrue($result['attempted']);
         $this->assertTrue($result['reachable']);
         $this->assertSame(200, $result['http_status']);
+        $this->assertGreaterThanOrEqual(0, $result['response_time_ms']);
         $this->assertFalse($result['looks_blocked']);
         $this->assertFalse($result['looks_like_error_page']);
     }

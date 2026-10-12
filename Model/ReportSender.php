@@ -38,11 +38,12 @@ class ReportSender
      * The full-collection report payload for the given cadence tier, without sending it.
      *
      * @param string $cadence One of Api\DeclaresCadenceInterface::CADENCE_*.
+     * @param Slot|null $slot Run within the tier; null collects the whole tier.
      * @return array<string, mixed>
      */
-    public function buildPayload(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY): array
+    public function buildPayload(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): array
     {
-        return $this->payloadBuilder->build($cadence);
+        return $this->payloadBuilder->build($cadence, $slot);
     }
 
     /**
@@ -59,14 +60,15 @@ class ReportSender
      * Respects the admin "Enabled" toggle - this is what the hourly/daily cron jobs call.
      *
      * @param string $cadence One of Api\DeclaresCadenceInterface::CADENCE_*.
+     * @param Slot|null $slot Run within the tier; null collects the whole tier.
      */
-    public function send(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY): bool
+    public function send(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): bool
     {
         if (!$this->config->isEnabled()) {
             return false;
         }
 
-        return $this->sendNow($cadence);
+        return $this->sendNow($cadence, $slot);
     }
 
     /**
@@ -88,10 +90,11 @@ class ReportSender
      * is visible in var/log/stacknuts_stackgauge.log even without a configured endpoint.
      *
      * @param string $cadence One of Api\DeclaresCadenceInterface::CADENCE_*.
+     * @param Slot|null $slot Run within the tier; null collects the whole tier.
      */
-    public function sendNow(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY): bool
+    public function sendNow(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): bool
     {
-        $payload = $this->buildPayload($cadence);
+        $payload = $this->buildPayload($cadence, $slot);
         $this->logger->info("StackGauge: full report ({$cadence}) " . json_encode($payload, JSON_UNESCAPED_SLASHES));
 
         return $this->transport->send($payload, "report ({$cadence})");

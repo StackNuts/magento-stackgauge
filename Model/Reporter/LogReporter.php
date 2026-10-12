@@ -12,6 +12,7 @@ use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
@@ -48,7 +49,7 @@ use Throwable;
  * full scan today, this reporter just adds each run's newly-found count to it instead of
  * recomputing the whole thing from scratch.
  */
-class LogReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface
+class LogReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use PlatformSectionTrait;
 
@@ -395,5 +396,13 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
             // and must not advance a saved offset over a read it didn't actually complete.
             return ['offset' => 0, 'previous_running_count' => 0, 'has_file' => false];
         }
+    }
+
+    /**
+     * Run 2 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 2;
     }
 }

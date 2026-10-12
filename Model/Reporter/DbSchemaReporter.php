@@ -12,6 +12,7 @@ use Magento\Framework\Module\ModuleListInterface;
 use Magento\Framework\Module\ModuleResource;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
@@ -26,7 +27,7 @@ use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
  * setup:upgrade never did" drift, invisible from the outside and easy to miss per-site
  * without an inventory like this.
  */
-class DbSchemaReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface
+class DbSchemaReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use DailyCadenceTrait;
     use DataSectionTrait;
@@ -147,5 +148,13 @@ class DbSchemaReporter implements ReporterInterface, DeclaresCadenceInterface, M
                 impact: 'Upgrades may fail or data may be lost.'
             ),
         ];
+    }
+
+    /**
+     * Run 1 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 1;
     }
 }

@@ -14,6 +14,7 @@ use Magento\Framework\Indexer\IndexerInterface;
 use Magento\Framework\Indexer\StateInterface;
 use Magento\Indexer\Model\Indexer\CollectionFactory;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
@@ -22,7 +23,7 @@ use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
 use Throwable;
 
-class IndexerReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface
+class IndexerReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use DataSectionTrait;
 
@@ -225,5 +226,13 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
             $count > self::BACKLOG_WARNING_THRESHOLD => Field::SEVERITY_WARNING,
             default => Field::SEVERITY_OK,
         };
+    }
+
+    /**
+     * Run 1 within this reporter's cadence tier.
+     */
+    public function getSlot(): int
+    {
+        return 1;
     }
 }

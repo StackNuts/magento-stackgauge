@@ -52,6 +52,13 @@ interface DeclaresSectionInterface
     public const SECTION_SECURITY = 'security';
 
     /**
+     * Runtime and configuration signals that affect how fast the store responds: PHP/MySQL/Redis
+     * runtime health, cron and indexer duration, and caching configuration. Used by
+     * StackNuts_StackGaugePerformance's reporters.
+     */
+    public const SECTION_PERFORMANCE = 'performance';
+
+    /**
      * @var list<string>
      */
     public const VALID_SECTIONS = [
@@ -60,6 +67,7 @@ interface DeclaresSectionInterface
         self::SECTION_COMMERCE,
         self::SECTION_PLATFORM,
         self::SECTION_SECURITY,
+        self::SECTION_PERFORMANCE,
     ];
 
     /**
