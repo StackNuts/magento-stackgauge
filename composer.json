@@ -2,7 +2,14 @@
   "name": "stacknuts/magento-stackgauge",
   "description": "Reports version, patch, and operational health data from a Magento store to a central StackGauge fleet dashboard, so an agency can see every client site's update/security posture at a glance.",
   "type": "magento2-module",
-  "keywords": ["magento2", "fleet", "monitoring", "observability", "patch-management", "version-inventory"],
+  "keywords": [
+    "magento2",
+    "fleet",
+    "monitoring",
+    "observability",
+    "patch-management",
+    "version-inventory"
+  ],
   "homepage": "https://github.com/StackNuts/magento-stackgauge",
   "authors": [
     {
@@ -42,5 +49,13 @@
     "psr-4": {
       "StackNuts\\StackGauge\\Test\\": "Test/"
     }
+  },
+  "scripts": {
+    "phpstan": "phpstan analyse -c phpstan.neon.dist --no-progress --memory-limit=2G",
+    "phpcs": "phpcs --standard=phpcs.xml.dist",
+    "check": [
+      "@phpstan",
+      "@phpcs"
+    ]
   }
 }

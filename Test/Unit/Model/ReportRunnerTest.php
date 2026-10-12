@@ -19,7 +19,10 @@ use StackNuts\StackGauge\Model\SlotResolver;
 
 class ReportRunnerTest extends TestCase
 {
+    /** @var ReportSender&\PHPUnit\Framework\MockObject\MockObject */
     private ReportSender $sender;
+
+    /** @var ReportRunner */
     private ReportRunner $runner;
 
     protected function setUp(): void
@@ -36,7 +39,8 @@ class ReportRunnerTest extends TestCase
     }
 
     /**
-     * @param string[] $labels
+     * @param \StackNuts\StackGauge\Model\ReportRun[] $runs
+     * @return string[]
      */
     private function labels(array $runs): array
     {

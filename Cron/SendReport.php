@@ -40,9 +40,15 @@ class SendReport
     public function execute(): void
     {
         try {
-            $this->reportSender->send(DeclaresCadenceInterface::CADENCE_HOURLY, $this->slotResolver->currentHourly());
+            $this->reportSender->send(
+                DeclaresCadenceInterface::CADENCE_HOURLY,
+                $this->slotResolver->currentHourly()
+            );
         } catch (Throwable $e) {
-            $this->logger->critical('StackGauge: SendReport cron job failed: ' . $e->getMessage(), ['exception' => $e]);
+            $this->logger->critical(
+                'StackGauge: SendReport cron job failed: ' . $e->getMessage(),
+                ['exception' => $e]
+            );
         }
     }
 }

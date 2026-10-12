@@ -375,10 +375,6 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
 
                 while (!$stream->eof()) {
                     $line = $stream->readLine(self::MAX_LINE_LENGTH);
-                    if ($line === false) {
-                        break;
-                    }
-
                     $onLine(rtrim($line, "\r\n"));
                 }
 

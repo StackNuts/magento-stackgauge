@@ -25,6 +25,6 @@ class LogFiles extends AbstractFieldArray
         $this->addColumn('name', ['label' => __('Name')]);
         $this->addColumn('file', ['label' => __('File (in var/log)')]);
         $this->_addAfter = false;
-        $this->_addButtonLabel = __('Add Log File');
+        $this->_addButtonLabel = (string)__('Add Log File');
     }
 }

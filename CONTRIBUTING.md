@@ -29,3 +29,13 @@ Running tests
 Reporting issues
 
 - Open issues at: https://github.com/StackNuts/magento-stackgauge/issues
+
+## Development checks
+
+With the module under `app/code/StackNuts` of a Magento root, run from the module directory:
+
+```bash
+composer check      # PHPStan (level 5) + phpcs (Magento2 standard)
+```
+
+Unit tests: `vendor/bin/phpunit -c dev/tests/unit/phpunit.xml.dist app/code/StackNuts/StackGauge/Test/Unit` from the Magento root. phpcs warnings are legacy noise; errors and PHPStan findings must be clean.

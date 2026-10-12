@@ -43,9 +43,13 @@ class SendDailyReport
     public function execute(): void
     {
         try {
-            $this->reportSender->send(DeclaresCadenceInterface::CADENCE_DAILY, $this->slotResolver->forIndex(DeclaresCadenceInterface::CADENCE_DAILY, $this->slot));
+            $cadence = DeclaresCadenceInterface::CADENCE_DAILY;
+            $this->reportSender->send($cadence, $this->slotResolver->forIndex($cadence, $this->slot));
         } catch (Throwable $e) {
-            $this->logger->critical('StackGauge: SendDailyReport cron job failed: ' . $e->getMessage(), ['exception' => $e]);
+            $this->logger->critical(
+                'StackGauge: SendDailyReport cron job failed: ' . $e->getMessage(),
+                ['exception' => $e]
+            );
         }
     }
 }
