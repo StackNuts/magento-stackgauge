@@ -21,6 +21,7 @@ use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\LogOffsetStore;
 use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
+use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 use Throwable;
 
 /**
@@ -77,13 +78,15 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
      * @param LogOffsetStore $logOffsetStore
      * @param Field $field
      * @param Section $section
+     * @param LogLineRedactor $redactor
      */
     public function __construct(
         private readonly Filesystem $filesystem,
         private readonly Config $config,
         private readonly LogOffsetStore $logOffsetStore,
         private readonly Field $field,
-        private readonly Section $section
+        private readonly Section $section,
+        private readonly LogLineRedactor $redactor
     ) {
     }
 
@@ -144,11 +147,13 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
             // No keyName override: identical exception messages recurring in the log window
             // are common and not a reporter bug, so this deliberately skips the
             // duplicate-row check (which needs every row to share the missing "name" column).
+            // Every line that leaves the store goes through the redactor first - log text
+            // routinely carries customer emails, request payloads and credentials.
             'recent_exceptions' => $this->section->table('recent_exceptions', 'Recent exceptions', '', array_map(
                 fn($m) => $this->field->array($m, [
                     'message' => $this->field->varchar('Message', $m),
                 ]),
-                $exceptionScan['recent']
+                array_map($this->redactor->redact(...), $exceptionScan['recent'])
             )),
         ];
 
@@ -165,7 +170,7 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
             };
             $sections[$key] = $this->section->table($key, $name, '', array_map(
                 fn(string $line) => $this->field->array('', ['line' => $this->field->varchar('Line', $line)]),
-                $lines
+                array_map($this->redactor->redact(...), $lines)
             ));
         }
 

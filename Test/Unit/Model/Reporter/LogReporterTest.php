@@ -17,6 +17,7 @@ use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\LogOffsetStore;
 use StackNuts\StackGauge\Model\Reporter\LogReporter;
+use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 
 class LogReporterTest extends TestCase
 {
@@ -65,7 +66,8 @@ class LogReporterTest extends TestCase
             $config,
             $offsetStore ?? new FakeLogOffsetStore(),
             new Field(),
-            new Section()
+            new Section(),
+            new LogLineRedactor()
         );
     }
 

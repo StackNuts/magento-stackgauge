@@ -8,7 +8,7 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model;
 
-use Magento\Framework\HTTP\Client\Curl;
+use Magento\Framework\HTTP\Client\CurlFactory;
 use Magento\Framework\Serialize\Serializer\Json;
 use Psr\Log\LoggerInterface;
 use Throwable;
@@ -31,16 +31,20 @@ class Transport
     private const GZIP_THRESHOLD_BYTES = 1024;
 
     /**
+     * Takes a CurlFactory rather than a Curl: Magento shares one Curl instance per process and
+     * the headers set on it persist, so the Authorization/signature headers set here would
+     * otherwise ride along on whatever the next caller of that shared client requests.
+     *
      * @param Config $config
      * @param PayloadSigner $payloadSigner
-     * @param Curl $curl
+     * @param CurlFactory $curlFactory
      * @param Json $json
      * @param LoggerInterface $logger
      */
     public function __construct(
         private readonly Config $config,
         private readonly PayloadSigner $payloadSigner,
-        private readonly Curl $curl,
+        private readonly CurlFactory $curlFactory,
         private readonly Json $json,
         private readonly LoggerInterface $logger
     ) {
@@ -62,6 +66,15 @@ class Transport
         if (!$endpoint || !$apiKey) {
             $this->logger->warning(sprintf(
                 'StackGauge: cannot send %s - endpoint URL or API key is not configured.',
+                $logContext
+            ));
+            return false;
+        }
+
+        // The API key and signed store data must never cross the network in the clear.
+        if (strtolower((string)parse_url($endpoint, PHP_URL_SCHEME)) !== 'https') {
+            $this->logger->warning(sprintf(
+                'StackGauge: cannot send %s - the endpoint URL must use https://.',
                 $logContext
             ));
             return false;
@@ -91,14 +104,15 @@ class Transport
             }
         }
 
-        $this->curl->setOptions([
+        $curl = $this->curlFactory->create();
+        $curl->setOptions([
             CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
             CURLOPT_TIMEOUT => self::TOTAL_TIMEOUT_SECONDS,
         ]);
-        $this->curl->setHeaders($headers);
+        $curl->setHeaders($headers);
 
         try {
-            $this->curl->post($endpoint, $wireBody);
+            $curl->post($endpoint, $wireBody);
         } catch (Throwable $e) {
             $this->logger->warning(sprintf(
                 'StackGauge: failed to send %s: %s',
@@ -108,7 +122,7 @@ class Transport
             return false;
         }
 
-        $status = $this->curl->getStatus();
+        $status = $curl->getStatus();
         if ($status >= 200 && $status < 300) {
             $this->logger->info(sprintf('StackGauge: %s sent successfully (HTTP %d).', $logContext, $status));
             return true;
@@ -118,7 +132,7 @@ class Transport
             'StackGauge: dashboard responded with HTTP %d for %s: %s',
             $status,
             $logContext,
-            substr((string)$this->curl->getBody(), 0, 500)
+            substr((string)$curl->getBody(), 0, 500)
         ));
 
         return false;

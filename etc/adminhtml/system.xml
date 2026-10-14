@@ -18,7 +18,9 @@
                 </field>
                 <field id="endpoint_url" translate="label comment" type="text" sortOrder="20" showInDefault="1" showInWebsite="0" showInStore="0">
                     <label>Dashboard Endpoint URL</label>
-                    <comment>Full ingest URL issued by the StackGauge dashboard, e.g. https://dashboard.example.com/api/ingest.</comment>
+                    <comment>Full ingest URL issued by the StackGauge dashboard, e.g. https://dashboard.example.com/api/ingest. Must be https://.</comment>
+                    <frontend_class>validate-secure-url</frontend_class>
+                    <backend_model>StackNuts\StackGauge\Model\System\Config\Backend\EndpointUrl</backend_model>
                 </field>
                 <field id="site_id" translate="label comment" type="text" sortOrder="30" showInDefault="1" showInWebsite="0" showInStore="0">
                     <label>Site Identifier</label>
