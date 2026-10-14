@@ -12,11 +12,25 @@ use Magento\Framework\App\MaintenanceMode;
 use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\HeartbeatSender;
+use StackNuts\StackGauge\Model\PayloadEnvelope;
 use StackNuts\StackGauge\Model\StorefrontProbe;
 use StackNuts\StackGauge\Model\Transport;
+use StackNuts\StackGauge\Model\Util\ComposerLockReader;
 
 class HeartbeatSenderTest extends TestCase
 {
+    /**
+     * @param Config $config
+     */
+    private function envelope(Config $config): PayloadEnvelope
+    {
+        $lockReader = $this->createMock(ComposerLockReader::class);
+        // The heartbeat runs every few minutes - it must not parse composer.lock each time.
+        $lockReader->expects($this->never())->method('getDecoded');
+
+        return new PayloadEnvelope($config, $lockReader);
+    }
+
     public function testIncludesStorefrontProbeResultWhenEnabled(): void
     {
         $config = $this->createMock(Config::class);
@@ -45,7 +59,7 @@ class HeartbeatSenderTest extends TestCase
             }
         );
 
-        $sender = new HeartbeatSender($config, $maintenanceMode, $storefrontProbe, $transport);
+        $sender = new HeartbeatSender($config, $maintenanceMode, $storefrontProbe, $transport, $this->envelope($config));
         $sender->sendNow();
 
         $this->assertSame($probeResult, $sentPayload['storefront_probe']);
@@ -71,9 +85,37 @@ class HeartbeatSenderTest extends TestCase
             }
         );
 
-        $sender = new HeartbeatSender($config, $maintenanceMode, $storefrontProbe, $transport);
+        $sender = new HeartbeatSender($config, $maintenanceMode, $storefrontProbe, $transport, $this->envelope($config));
         $sender->sendNow();
 
         $this->assertArrayNotHasKey('storefront_probe', $sentPayload);
+    }
+
+    public function testSendsTheSharedEnvelopeWithoutAModuleVersion(): void
+    {
+        $config = $this->createMock(Config::class);
+        $config->method('getSiteId')->willReturn('site-123');
+
+        $sentPayload = null;
+        $transport = $this->createMock(Transport::class);
+        $transport->method('send')->willReturnCallback(
+            function (array $payload) use (&$sentPayload): bool {
+                $sentPayload = $payload;
+                return true;
+            }
+        );
+
+        (new HeartbeatSender(
+            $config,
+            $this->createMock(MaintenanceMode::class),
+            $this->createMock(StorefrontProbe::class),
+            $transport,
+            $this->envelope($config)
+        ))->sendNow();
+
+        $this->assertSame('heartbeat', $sentPayload['type']);
+        $this->assertSame(['identifier' => 'site-123'], $sentPayload['site']);
+        $this->assertArrayHasKey('generated_at', $sentPayload);
+        $this->assertArrayNotHasKey('module_version', $sentPayload);
     }
 }

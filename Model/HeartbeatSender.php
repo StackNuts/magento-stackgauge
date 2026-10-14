@@ -8,7 +8,6 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model;
 
-use DateTimeImmutable;
 use Magento\Framework\App\MaintenanceMode;
 
 /**
@@ -34,12 +33,14 @@ class HeartbeatSender
      * @param MaintenanceMode $maintenanceMode
      * @param StorefrontProbe $storefrontProbe
      * @param Transport $transport
+     * @param PayloadEnvelope $envelope
      */
     public function __construct(
         private readonly Config $config,
         private readonly MaintenanceMode $maintenanceMode,
         private readonly StorefrontProbe $storefrontProbe,
-        private readonly Transport $transport
+        private readonly Transport $transport,
+        private readonly PayloadEnvelope $envelope
     ) {
     }
 
@@ -62,13 +63,7 @@ class HeartbeatSender
      */
     public function sendNow(): bool
     {
-        $payload = [
-            'type' => 'heartbeat',
-            'schema_version' => self::SCHEMA_VERSION,
-            'generated_at' => (new DateTimeImmutable())->format(DATE_ATOM),
-            'site' => [
-                'identifier' => $this->config->getSiteId(),
-            ],
+        $payload = $this->envelope->create('heartbeat', self::SCHEMA_VERSION, withModuleVersion: false) + [
             'maintenance_mode' => $this->maintenanceMode->isOn(),
         ];
 

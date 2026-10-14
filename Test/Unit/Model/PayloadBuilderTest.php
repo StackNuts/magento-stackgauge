@@ -14,6 +14,7 @@ use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\MetricCatalogPool;
 use StackNuts\StackGauge\Model\PayloadBuilder;
+use StackNuts\StackGauge\Model\PayloadEnvelope;
 use StackNuts\StackGauge\Model\ReporterPool;
 use StackNuts\StackGauge\Model\Util\ComposerLockReader;
 
@@ -30,7 +31,7 @@ class PayloadBuilderTest extends TestCase
         $config ??= $this->createStub(Config::class);
         $composerLockReader ??= $this->createStub(ComposerLockReader::class);
 
-        return new PayloadBuilder($reporterPool, $metricCatalogPool, $config, $composerLockReader);
+        return new PayloadBuilder($reporterPool, $metricCatalogPool, new PayloadEnvelope($config, $composerLockReader));
     }
 
     private function composerLockReaderWithModuleVersion(?string $version): ComposerLockReader
