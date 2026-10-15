@@ -19,6 +19,7 @@ use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
+use StackNuts\StackGauge\Api\Unit;
 use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
 use Throwable;
 
@@ -127,14 +128,16 @@ class DiskSpaceReporter implements ReporterInterface, MetricCatalogInterface, De
         return [
             new MetricDefinition(
                 self::METRIC_MEDIA_FREE_PERCENT,
-                'Disk Space: Media Free %',
+                'Disk Space: Media Free',
                 MetricDefinition::AGGREGATION_LATEST,
                 MetricDefinition::OPERATOR_LT,
                 10,
                 15,
                 null,
-                description: 'Only {value}% of media disk space is free, below {threshold}%.',
-                impact: 'Uploads will fail once the disk is full.'
+                description: 'Only {value} of media disk space is free, below {threshold}.',
+                impact: 'Uploads will fail once the disk is full.',
+                criticalThreshold: 5,
+                unit: Unit::PERCENT
             ),
         ];
     }
@@ -195,20 +198,21 @@ class DiskSpaceReporter implements ReporterInterface, MetricCatalogInterface, De
 
         $freePercentField = $purpose === 'media'
             ? $this->field->trackableNumber(
-                'Free Percent',
+                'Free',
                 $freePercent,
                 self::METRIC_MEDIA_FREE_PERCENT,
                 MetricDefinition::AGGREGATION_LATEST,
-                $severity
+                $severity,
+                unit: Unit::PERCENT
             )
-            : $this->field->number('Free Percent', $freePercent, $severity);
+            : $this->field->number('Free', $freePercent, $severity, unit: Unit::PERCENT);
 
         return $this->field->array($purpose, [
             'name' => $this->field->varchar('Name', $purpose),
             'purpose' => $this->field->varchar('Purpose', self::PURPOSES[$purpose] ?? $purpose),
             'measurable' => $this->field->bool('Measurable', $measurable),
-            'free_bytes' => $this->field->number('Free Bytes', $freeBytes),
-            'total_bytes' => $this->field->number('Total Bytes', $totalBytes),
+            'free_bytes' => $this->field->number('Free Space', $freeBytes, unit: Unit::BYTES),
+            'total_bytes' => $this->field->number('Total Space', $totalBytes, unit: Unit::BYTES),
             'free_percent' => $freePercentField,
         ]);
     }

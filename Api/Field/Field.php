@@ -96,10 +96,12 @@ class Field
      * @param string $label
      * @param int|float $value
      * @param string|null $severity One of Field::SEVERITY_*; leave null for a plain, uncolored value.
+     * @param string|null $unit One of Api\Unit::ALL (e.g. Unit::MEGABYTES), or null for a plain count. Sent
+     *     next to the value, never applied to it - keep the unit out of $label.
      */
-    public function number(string $label, int|float $value, ?string $severity = null): NumberField
+    public function number(string $label, int|float $value, ?string $severity = null, ?string $unit = null): NumberField
     {
-        return new NumberField($label, $value, $severity);
+        return new NumberField($label, $value, $severity, $unit);
     }
 
     /**
@@ -111,15 +113,17 @@ class Field
      * @param string $aggregation How the dashboard combines multiple samples of this metric
      *     over a time window - one of MetricDefinition::AGGREGATION_*.
      * @param string|null $severity Same optional coloring hint as Field::number()'s.
+     * @param string|null $unit Same as Field::number()'s - should match the MetricDefinition's own unit.
      */
     public function trackableNumber(
         string $label,
         int|float $value,
         string $metricKey,
         string $aggregation,
-        ?string $severity = null
+        ?string $severity = null,
+        ?string $unit = null
     ): TrackableNumberField {
-        return new TrackableNumberField($label, $value, $metricKey, $aggregation, $severity);
+        return new TrackableNumberField($label, $value, $metricKey, $aggregation, $severity, $unit);
     }
 
     /**

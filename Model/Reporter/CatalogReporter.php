@@ -115,7 +115,8 @@ class CatalogReporter implements ReporterInterface, MetricCatalogInterface, Decl
                 1500,
                 null,
                 description: 'Only {value} products are enabled, below the minimum of {threshold}.',
-                impact: 'The catalogue may have been disabled or wiped by accident.'
+                impact: 'The catalogue may have been disabled or wiped by accident.',
+                severity: MetricDefinition::SEVERITY_CRITICAL
             ),
         ];
     }

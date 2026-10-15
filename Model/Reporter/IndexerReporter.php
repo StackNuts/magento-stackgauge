@@ -178,7 +178,8 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
                 15,
                 null,
                 description: 'An indexer has {value} changes waiting, above the limit of {threshold}.',
-                impact: 'The storefront may show stale prices, stock and catalogue data.'
+                impact: 'The storefront may show stale prices, stock and catalogue data.',
+                criticalThreshold: 5000
             ),
         ];
     }

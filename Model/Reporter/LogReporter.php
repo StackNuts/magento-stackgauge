@@ -194,7 +194,8 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
                 360,
                 null,
                 description: '{value} exceptions were logged in the last {window}, above {threshold}.',
-                impact: 'Something in the code is failing repeatedly.'
+                impact: 'Something in the code is failing repeatedly.',
+                criticalThreshold: 200
             ),
         ];
     }

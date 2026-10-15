@@ -219,6 +219,20 @@ Shape rules for a reporter's `getStatus()` return value:
 - Return an empty section rather than throwing when there's nothing to report - a thrown
   exception is logged and surfaces as an error for that cycle instead of your data.
 - Keep it small - no raw file contents, no PII, no binary blobs.
+- Give a number its unit via `unit:` (one of `StackNuts\StackGauge\Api\Unit` - bytes/KB/MB/GB,
+  ms/s/min/h/d, `%`) rather than putting it in the label: `number('Used Memory', $mb,
+  unit: Unit::MEGABYTES)`, not `number('Used Memory (MB)', $mb)`. The value is sent untouched;
+  the dashboard picks a readable scale for display (2048 MB shows as "2 GB").
+
+Alerting on a value: return it via `trackableNumber()` and declare a matching
+`StackNuts\StackGauge\Api\MetricDefinition` from `getTrackableMetrics()`
+(`MetricCatalogInterface`). Besides the default operator/threshold/window, a definition sets
+how severe a breach is - `severity:` (`SEVERITY_WARNING`, the default, or `SEVERITY_CRITICAL`)
+and, for a warning, an optional stricter `criticalThreshold:` at which the same alert
+escalates to critical (e.g. disk free below 10% = warning, below 5% = critical) - plus the same
+`unit:` as its field. All of these are suggestions: each site's alert rule can be tuned on the
+dashboard, and a tuned value survives later syncs. Leave units out of `description:`/`impact:`
+too - `{value}` and `{threshold}` are filled in with the unit already attached.
 
 The admin **Disabled Reporters** toggle covers your reporter too, automatically - its options
 are derived from every reporter actually registered with `ReporterPool` (see

@@ -14,6 +14,7 @@ use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
+use StackNuts\StackGauge\Api\Unit;
 use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
 use StackNuts\StackGauge\Model\StorefrontProbe;
 
@@ -96,10 +97,11 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
             ),
             'http_status' => $this->field->number('HTTP Status', $result['http_status']),
             'response_time_ms' => $this->field->trackableNumber(
-                'Response Time (ms)',
+                'Response Time',
                 $result['response_time_ms'],
                 self::METRIC_RESPONSE_TIME,
-                MetricDefinition::AGGREGATION_AVG
+                MetricDefinition::AGGREGATION_AVG,
+                unit: Unit::MILLISECONDS
             ),
             'looks_blocked' => $this->field->bool('Looks Blocked', $result['looks_blocked'], criticalWhen: true),
             'looks_like_error_page' => $this->field->bool(
@@ -128,18 +130,21 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
                 120,
                 null,
                 description: 'The storefront was unreachable at the last check.',
-                impact: 'Customers cannot reach the store.'
+                impact: 'Customers cannot reach the store.',
+                severity: MetricDefinition::SEVERITY_CRITICAL
             ),
             new MetricDefinition(
                 self::METRIC_RESPONSE_TIME,
-                'Uptime: Homepage Response Time (ms)',
+                'Uptime: Homepage Response Time',
                 MetricDefinition::AGGREGATION_AVG,
                 MetricDefinition::OPERATOR_GT,
                 2000,
                 60,
                 null,
                 description: 'The storefront homepage took longer than the threshold to respond, on average.',
-                impact: 'Slow responses hurt conversion and search ranking, and often precede an outage.'
+                impact: 'Slow responses hurt conversion and search ranking, and often precede an outage.',
+                criticalThreshold: 5000,
+                unit: Unit::MILLISECONDS
             ),
         ];
     }

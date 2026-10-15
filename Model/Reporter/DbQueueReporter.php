@@ -154,7 +154,8 @@ class DbQueueReporter implements ReporterInterface, DeclaresSectionInterface, Me
                 15,
                 null,
                 description: 'The database queue has {value} messages waiting, above the limit of {threshold}.',
-                impact: 'Background jobs such as emails and imports are not completing.'
+                impact: 'Background jobs such as emails and imports are not completing.',
+                criticalThreshold: 500
             ),
             // Threshold 0 - unlike backlog (expected to ebb and flow with normal traffic), any
             // error at all means a message a consumer genuinely couldn't process, worth

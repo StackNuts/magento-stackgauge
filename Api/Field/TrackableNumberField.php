@@ -10,6 +10,7 @@ namespace StackNuts\StackGauge\Api\Field;
 
 use InvalidArgumentException;
 use StackNuts\StackGauge\Api\Field\Concern\ValidatesSeverityTrait;
+use StackNuts\StackGauge\Api\Unit;
 
 /**
  * A NumberField whose value is also tracked over time for alerting - carries a stable
@@ -35,13 +36,15 @@ class TrackableNumberField implements FieldInterface
      * @param string $metricKey Must match a MetricDefinition this reporter declares via getTrackableMetrics().
      * @param string $aggregation One of MetricDefinition::AGGREGATION_*.
      * @param string|null $severity Same optional coloring hint as NumberField's.
+     * @param string|null $unit Same as NumberField's - one of Api\Unit::ALL, or null.
      */
     public function __construct(
         private readonly string $label,
         int|float $value,
         private readonly string $metricKey,
         private readonly string $aggregation,
-        private readonly ?string $severity = null
+        private readonly ?string $severity = null,
+        private readonly ?string $unit = null
     ) {
         if (is_float($value) && !is_finite($value)) {
             throw new InvalidArgumentException("Trackable number field \"{$label}\" must be finite.");
@@ -52,6 +55,10 @@ class TrackableNumberField implements FieldInterface
         }
 
         $this->assertValidSeverity('Trackable number', $label, $severity);
+
+        if (!Unit::isValid($unit)) {
+            throw new InvalidArgumentException("Trackable number field \"{$label}\" has unknown unit \"{$unit}\".");
+        }
 
         $this->value = $value;
     }
@@ -120,6 +127,10 @@ class TrackableNumberField implements FieldInterface
 
         if ($this->severity !== null) {
             $data['severity'] = $this->severity;
+        }
+
+        if ($this->unit !== null) {
+            $data['unit'] = $this->unit;
         }
 
         return $data;

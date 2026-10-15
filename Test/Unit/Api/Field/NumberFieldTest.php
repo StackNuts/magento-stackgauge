@@ -6,6 +6,7 @@ namespace StackNuts\StackGauge\Test\Unit\Api\Field;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\Field;
+use StackNuts\StackGauge\Api\Unit;
 
 class NumberFieldTest extends TestCase
 {
@@ -31,5 +32,22 @@ class NumberFieldTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
 
         (new Field())->number('Free Percent', 4.2, 'terrible');
+    }
+
+    public function testAUnitIsSentAlongsideTheUnchangedValue(): void
+    {
+        $field = (new Field())->number('Used Memory', 2048, unit: Unit::MEGABYTES);
+
+        $this->assertSame(
+            ['type' => 'number', 'label' => 'Used Memory', 'value' => 2048, 'unit' => 'MB'],
+            $field->jsonSerialize()
+        );
+    }
+
+    public function testRejectsAnUnknownUnit(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        (new Field())->number('Size', 1, unit: 'megabytes');
     }
 }

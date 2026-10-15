@@ -14,7 +14,8 @@ use JsonSerializable;
 /**
  * Declares one trackable metric a reporter exposes: a stable machine key, a human label, an
  * aggregation for combining samples over a time window, and a suggested starting alert rule
- * (default operator/threshold/window). This is a proposal, not a permanent setting: the
+ * (default operator/threshold/window, and how severe a breach is). This is a proposal, not a
+ * permanent setting: the
  * dashboard seeds a new alert rule from these defaults the first time it sees the metric via
  * config-sync, and only ever reapplies them via an explicit "reset to default" action - an
  * edited threshold survives every subsequent sync. See Api\MetricCatalogInterface.
@@ -39,6 +40,16 @@ class MetricDefinition implements JsonSerializable
     public const OPERATOR_GT = 'gt';
     public const OPERATOR_GTE = 'gte';
     public const OPERATOR_EQ = 'eq';
+
+    /**
+     * How severe a breach of the default threshold is. A metric can also declare a stricter
+     * $criticalThreshold, so the same alert opens as a warning and escalates to critical as the
+     * value worsens (e.g. disk free below 10% = warning, below 5% = critical).
+     */
+    public const SEVERITY_WARNING = 'warning';
+    public const SEVERITY_CRITICAL = 'critical';
+
+    private const VALID_SEVERITIES = [self::SEVERITY_WARNING, self::SEVERITY_CRITICAL];
 
     private const VALID_AGGREGATIONS = [
         self::AGGREGATION_SUM,
@@ -70,6 +81,11 @@ class MetricDefinition implements JsonSerializable
      * @param string|null $description Plain-language "what happened" sentence for alert notifications. May use
      *     the placeholders {value}, {threshold} and {window}, filled in by the dashboard from the live rule.
      * @param string|null $impact Plain-language "why this matters" sentence; same placeholders as $description.
+     * @param string $severity One of self::SEVERITY_* - how severe a breach of $defaultThreshold is.
+     * @param int|float|null $criticalThreshold Optional second, stricter threshold (same operator) at which a
+     *     warning escalates to critical. Only for a warning-severity metric, and never with OPERATOR_EQ.
+     * @param string|null $unit One of Api\Unit::ALL for the metric's value and thresholds, or null for a
+     *     plain count. Leave it out of $label/$description - the dashboard shows it next to the numbers.
      */
     public function __construct(
         private readonly string $metricKey,
@@ -80,7 +96,10 @@ class MetricDefinition implements JsonSerializable
         private readonly int $defaultWindowMinutes,
         private readonly ?string $cadence = null,
         private readonly ?string $description = null,
-        private readonly ?string $impact = null
+        private readonly ?string $impact = null,
+        private readonly string $severity = self::SEVERITY_WARNING,
+        private readonly int|float|null $criticalThreshold = null,
+        private readonly ?string $unit = null
     ) {
         if ($metricKey === '') {
             throw new InvalidArgumentException('Metric key must not be empty.');
@@ -99,6 +118,42 @@ class MetricDefinition implements JsonSerializable
         if ($defaultWindowMinutes <= 0) {
             throw new InvalidArgumentException(
                 "Metric \"{$metricKey}\" default window must be a positive number of minutes."
+            );
+        }
+
+        if (!in_array($severity, self::VALID_SEVERITIES, true)) {
+            throw new InvalidArgumentException("Metric \"{$metricKey}\" has unknown severity \"{$severity}\".");
+        }
+
+        if ($criticalThreshold !== null) {
+            $this->assertValidCriticalThreshold();
+        }
+
+        if (!Unit::isValid($unit)) {
+            throw new InvalidArgumentException("Metric \"{$metricKey}\" has unknown unit \"{$unit}\".");
+        }
+    }
+
+    /**
+     * A critical threshold escalates a warning, so it must sit on the "worse" side of the
+     * default threshold for the operator (higher for gt/gte, lower for lt/lte).
+     */
+    private function assertValidCriticalThreshold(): void
+    {
+        if ($this->severity !== self::SEVERITY_WARNING || $this->defaultOperator === self::OPERATOR_EQ) {
+            throw new InvalidArgumentException(
+                "Metric \"{$this->metricKey}\" can only have a critical threshold when its severity is warning "
+                . 'and its operator isn\'t eq.'
+            );
+        }
+
+        $stricter = in_array($this->defaultOperator, [self::OPERATOR_GT, self::OPERATOR_GTE], true)
+            ? $this->criticalThreshold > $this->defaultThreshold
+            : $this->criticalThreshold < $this->defaultThreshold;
+
+        if (!$stricter) {
+            throw new InvalidArgumentException(
+                "Metric \"{$this->metricKey}\" critical threshold must be stricter than its default threshold."
             );
         }
     }
@@ -176,6 +231,30 @@ class MetricDefinition implements JsonSerializable
     }
 
     /**
+     * How severe a breach of the default threshold is - one of self::SEVERITY_*.
+     */
+    public function getSeverity(): string
+    {
+        return $this->severity;
+    }
+
+    /**
+     * The threshold at which a warning escalates to critical, if any.
+     */
+    public function getCriticalThreshold(): int|float|null
+    {
+        return $this->criticalThreshold;
+    }
+
+    /**
+     * The unit of the metric's value and thresholds (one of Api\Unit::ALL), or null.
+     */
+    public function getUnit(): ?string
+    {
+        return $this->unit;
+    }
+
+    /**
      * Copy of this definition tagged with the owning reporter's cadence.
      */
     public function withCadence(string $cadence): self
@@ -189,7 +268,10 @@ class MetricDefinition implements JsonSerializable
             $this->defaultWindowMinutes,
             $cadence,
             $this->description,
-            $this->impact
+            $this->impact,
+            $this->severity,
+            $this->criticalThreshold,
+            $this->unit
         );
     }
 
@@ -210,6 +292,9 @@ class MetricDefinition implements JsonSerializable
             'cadence' => $this->cadence,
             'description' => $this->description,
             'impact' => $this->impact,
+            'default_severity' => $this->severity,
+            'default_critical_threshold' => $this->criticalThreshold,
+            'unit' => $this->unit,
         ];
     }
 }
