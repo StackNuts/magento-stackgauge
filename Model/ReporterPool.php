@@ -13,6 +13,7 @@ use Psr\Log\LoggerInterface;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
+use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\SectionInterface;
 use Throwable;
@@ -107,6 +108,56 @@ class ReporterPool
     }
 
     /**
+     * Copies each MetricDefinition's unit onto the trackable fields carrying its metric_key,
+     * so a reporter declares a metric's unit once (on the definition) rather than again on
+     * every field. A field that already names its own unit keeps it.
+     *
+     * @param ReporterInterface $reporter
+     * @param list<SectionInterface> $sections
+     * @return list<mixed>
+     */
+    private function withMetricUnits(ReporterInterface $reporter, array $sections): array
+    {
+        if (!$reporter instanceof MetricCatalogInterface) {
+            return $sections;
+        }
+
+        $units = [];
+        foreach ($reporter->getTrackableMetrics() as $definition) {
+            if ($definition->getUnit() !== null) {
+                $units[$definition->getMetricKey()] = $definition->getUnit();
+            }
+        }
+
+        if ($units === []) {
+            return $sections;
+        }
+
+        $stamp = function (array &$field) use ($units): void {
+            if (isset($field['metric_key'], $units[$field['metric_key']]) && !isset($field['unit'])) {
+                $field['unit'] = $units[$field['metric_key']];
+            }
+        };
+
+        $sections = json_decode((string)json_encode($sections), true);
+        foreach ($sections as &$section) {
+            foreach ($section['fields'] ?? [] as $key => $field) {
+                $stamp($section['fields'][$key]);
+            }
+            foreach ($section['rows'] ?? [] as $rowKey => $row) {
+                foreach ($row as $key => $field) {
+                    if (is_array($field)) {
+                        $stamp($section['rows'][$rowKey][$key]);
+                    }
+                }
+            }
+        }
+        unset($section);
+
+        return $sections;
+    }
+
+    /**
      * Collects one reporter's block.
      *
      * Replaces it with an {"error": ...} marker if the reporter throws or returns something
@@ -156,7 +207,7 @@ class ReporterPool
 
             // An ordered list, not a map - display order matters, and each section already
             // carries its own key (see SectionInterface::getKey()).
-            $result['sections'] = array_values($sections);
+            $result['sections'] = $this->withMetricUnits($reporter, array_values($sections));
 
             return $result;
         } catch (Throwable $e) {

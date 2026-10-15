@@ -24,4 +24,21 @@ class BoolFieldTest extends TestCase
             $field->jsonSerialize()
         );
     }
+
+    public function testAMetricKeyMakesItATrackedFinding(): void
+    {
+        $field = (new Field())->bool('Sample Data Present', true, criticalWhen: true, metricKey: 'security.sample_data_present');
+
+        $this->assertSame(
+            [
+                'type' => 'bool',
+                'label' => 'Sample Data Present',
+                'value' => true,
+                'critical_when' => true,
+                'metric_key' => 'security.sample_data_present',
+                'aggregation' => 'latest',
+            ],
+            $field->jsonSerialize()
+        );
+    }
 }

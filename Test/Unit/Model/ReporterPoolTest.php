@@ -15,9 +15,12 @@ use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\Field\Field;
+use StackNuts\StackGauge\Api\MetricCatalogInterface;
+use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\FactsSection;
 use StackNuts\StackGauge\Api\Section\Section;
+use StackNuts\StackGauge\Api\Unit;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\ReporterPool;
 
@@ -485,5 +488,63 @@ class ReporterPoolTest extends TestCase
         $pool = new ReporterPool($reporters, $config, $this->createStub(LoggerInterface::class));
 
         $this->assertSame($reporters, $pool->getReporters());
+    }
+
+    public function testAMetricDefinitionsUnitIsCopiedOntoItsTrackableFields(): void
+    {
+        $config = $this->createStub(Config::class);
+        $config->method('getDisabledReporterCodes')->willReturn([]);
+        $field = new Field();
+
+        $reporter = new class($field, $this->factsSection([
+            'used' => $field->trackableNumber('Used', 2048, 'redis.used', 'max'),
+            'own' => $field->trackableNumber('Own', 5, 'redis.own', 'max', unit: Unit::SECONDS),
+            'plain' => $field->number('Plain', 3),
+        ])) implements ReporterInterface, MetricCatalogInterface {
+            public function __construct(private Field $field, private FactsSection $section)
+            {
+            }
+
+            public function getName(): string
+            {
+                return 'redis';
+            }
+
+            public function getLabel(): string
+            {
+                return 'Redis';
+            }
+
+            public function getDescription(): string
+            {
+                return '';
+            }
+
+            public function getSchemaVersion(): string
+            {
+                return '1.0';
+            }
+
+            public function getStatus(): array
+            {
+                return ['general' => $this->section];
+            }
+
+            public function getTrackableMetrics(): array
+            {
+                return [
+                    new MetricDefinition('redis.used', 'Used', 'max', 'gt', 1, 60, unit: Unit::MEGABYTES),
+                    new MetricDefinition('redis.own', 'Own', 'max', 'gt', 1, 60, unit: Unit::MINUTES),
+                ];
+            }
+        };
+
+        $fields = (new ReporterPool([$reporter], $config, $this->createStub(LoggerInterface::class)))
+            ->collect()['redis']['sections'][0]['fields'];
+
+        $this->assertSame('MB', $fields['used']['unit']);
+        $this->assertSame('s', $fields['own']['unit'], 'A field naming its own unit keeps it.');
+        $this->assertArrayNotHasKey('unit', $fields['plain']);
+        $this->assertSame(2048, $fields['used']['value'], 'The value itself is untouched.');
     }
 }

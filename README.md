@@ -232,7 +232,14 @@ and, for a warning, an optional stricter `criticalThreshold:` at which the same 
 escalates to critical (e.g. disk free below 10% = warning, below 5% = critical) - plus the same
 `unit:` as its field. All of these are suggestions: each site's alert rule can be tuned on the
 dashboard, and a tuned value survives later syncs. Leave units out of `description:`/`impact:`
-too - `{value}` and `{threshold}` are filled in with the unit already attached.
+too - `{value}` and `{threshold}` are filled in with the unit already attached. Declare a
+metric's unit once, on its definition: it's copied onto the matching `trackableNumber()` fields
+automatically.
+
+Alerting on a yes/no check ("sample data installed", "debug logging on in production"): give
+the bool field a `metricKey:` (true when the problem is present) and declare it with
+`MetricDefinition::finding($metricKey, $label, $severity, $description, $impact)`. The dashboard
+alerts while it's true - per-site enable/disable and severity, no dashboard code needed.
 
 The admin **Disabled Reporters** toggle covers your reporter too, automatically - its options
 are derived from every reporter actually registered with `ReporterPool` (see

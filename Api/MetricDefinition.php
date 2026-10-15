@@ -86,6 +86,7 @@ class MetricDefinition implements JsonSerializable
      *     warning escalates to critical. Only for a warning-severity metric, and never with OPERATOR_EQ.
      * @param string|null $unit One of Api\Unit::ALL for the metric's value and thresholds, or null for a
      *     plain count. Leave it out of $label/$description - the dashboard shows it next to the numbers.
+     * @param bool $finding True for a yes/no finding - use self::finding() rather than setting this.
      */
     public function __construct(
         private readonly string $metricKey,
@@ -99,7 +100,8 @@ class MetricDefinition implements JsonSerializable
         private readonly ?string $impact = null,
         private readonly string $severity = self::SEVERITY_WARNING,
         private readonly int|float|null $criticalThreshold = null,
-        private readonly ?string $unit = null
+        private readonly ?string $unit = null,
+        private readonly bool $finding = false
     ) {
         if ($metricKey === '') {
             throw new InvalidArgumentException('Metric key must not be empty.');
@@ -156,6 +158,41 @@ class MetricDefinition implements JsonSerializable
                 "Metric \"{$this->metricKey}\" critical threshold must be stricter than its default threshold."
             );
         }
+    }
+
+    /**
+     * A yes/no finding: alerts while the reporter's Field::bool(..., metricKey: $metricKey)
+     * is true (sent as 1). Same alert-rule pipeline as any metric - per-site enable/disable,
+     * editable severity - with no dashboard code needed for a new finding.
+     *
+     * @param string $metricKey Must match the bool field's metricKey.
+     * @param string $label
+     * @param string $severity One of self::SEVERITY_*.
+     * @param string|null $description Plain-language "what's wrong".
+     * @param string|null $impact Plain-language "why it matters".
+     * @param int $windowMinutes How far back the latest value may be - longer than the reporter's cadence.
+     */
+    public static function finding(
+        string $metricKey,
+        string $label,
+        string $severity = self::SEVERITY_WARNING,
+        ?string $description = null,
+        ?string $impact = null,
+        int $windowMinutes = 1500
+    ): self {
+        return new self(
+            $metricKey,
+            $label,
+            self::AGGREGATION_LATEST,
+            self::OPERATOR_EQ,
+            1,
+            $windowMinutes,
+            null,
+            $description,
+            $impact,
+            $severity,
+            finding: true
+        );
     }
 
     /**
@@ -271,7 +308,8 @@ class MetricDefinition implements JsonSerializable
             $this->impact,
             $this->severity,
             $this->criticalThreshold,
-            $this->unit
+            $this->unit,
+            $this->finding
         );
     }
 
@@ -295,6 +333,9 @@ class MetricDefinition implements JsonSerializable
             'default_severity' => $this->severity,
             'default_critical_threshold' => $this->criticalThreshold,
             'unit' => $this->unit,
+            // "finding" = a yes/no check (see finding()): the dashboard alerts while it's true,
+            // shows no "current value" and offers only severity/enable to edit.
+            'kind' => $this->finding ? 'finding' : 'metric',
         ];
     }
 }

@@ -202,8 +202,7 @@ class DiskSpaceReporter implements ReporterInterface, MetricCatalogInterface, De
                 $freePercent,
                 self::METRIC_MEDIA_FREE_PERCENT,
                 MetricDefinition::AGGREGATION_LATEST,
-                $severity,
-                unit: Unit::PERCENT
+                $severity
             )
             : $this->field->number('Free', $freePercent, $severity, unit: Unit::PERCENT);
 

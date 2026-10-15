@@ -103,8 +103,7 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
                 'Response Time',
                 $result['response_time_ms'],
                 self::METRIC_RESPONSE_TIME,
-                MetricDefinition::AGGREGATION_AVG,
-                unit: Unit::MILLISECONDS
+                MetricDefinition::AGGREGATION_AVG
             ),
             // A store left in maintenance mode after a deploy is "down" to customers even though
             // the self-probe may still get a response, so it belongs next to reachability.

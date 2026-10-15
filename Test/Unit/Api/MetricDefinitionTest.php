@@ -41,6 +41,7 @@ class MetricDefinitionTest extends TestCase
                 'default_severity' => 'warning',
                 'default_critical_threshold' => null,
                 'unit' => null,
+                'kind' => 'metric',
             ],
             $metric->jsonSerialize()
         );
@@ -172,5 +173,18 @@ class MetricDefinitionTest extends TestCase
                 $this->addToAssertionCount(1);
             }
         }
+    }
+
+    public function testFindingIsALatestEqualsOneRuleWithItsSeverity(): void
+    {
+        $finding = MetricDefinition::finding('security.sample_data_present', 'Sample Data', MetricDefinition::SEVERITY_CRITICAL, 'd', 'i');
+        $wire = $finding->jsonSerialize();
+
+        $this->assertSame('latest', $wire['aggregation']);
+        $this->assertSame('eq', $wire['default_operator']);
+        $this->assertSame(1, $wire['default_threshold']);
+        $this->assertSame('critical', $wire['default_severity']);
+        $this->assertSame('finding', $wire['kind']);
+        $this->assertSame('finding', $finding->withCadence('daily')->jsonSerialize()['kind']);
     }
 }

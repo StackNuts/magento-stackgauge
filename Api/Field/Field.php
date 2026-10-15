@@ -54,10 +54,12 @@ class Field
      * @param bool|null $criticalWhen See BoolField's own docblock - declares which value
      *     counts as "critical" for coloring; leave null for a bool with no health meaning
      *     of its own.
+     * @param string|null $metricKey Makes this an alertable finding - see BoolField's docblock
+     *     and MetricDefinition::finding().
      */
-    public function bool(string $label, bool $value, ?bool $criticalWhen = null): BoolField
+    public function bool(string $label, bool $value, ?bool $criticalWhen = null, ?string $metricKey = null): BoolField
     {
-        return new BoolField($label, $value, $criticalWhen);
+        return new BoolField($label, $value, $criticalWhen, $metricKey);
     }
 
     /**
