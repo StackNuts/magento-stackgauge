@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
+use Magento\Framework\App\MaintenanceMode;
 use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
@@ -26,12 +27,14 @@ class UptimeReporterTest extends TestCase
      *     looks_like_error_page: bool
      * } $probeResult
      */
-    private function reporter(array $probeResult): UptimeReporter
+    private function reporter(array $probeResult, bool $maintenanceOn = false): UptimeReporter
     {
         $probe = $this->createMock(StorefrontProbe::class);
         $probe->method('probe')->willReturn($probeResult);
+        $maintenance = $this->createMock(MaintenanceMode::class);
+        $maintenance->method('isOn')->willReturn($maintenanceOn);
 
-        return new UptimeReporter($probe, new Field(), new Section());
+        return new UptimeReporter($probe, $maintenance, new Field(), new Section());
     }
 
     public function testHealthySiteReportsReachableAsOne(): void
@@ -87,9 +90,27 @@ class UptimeReporterTest extends TestCase
     public function testDeclaresTheHealthSection(): void
     {
         $probe = $this->createMock(StorefrontProbe::class);
-        $reporter = new UptimeReporter($probe, new Field(), new Section());
+        $reporter = new UptimeReporter($probe, $this->createMock(MaintenanceMode::class), new Field(), new Section());
 
         $this->assertSame('health', $reporter->getSection());
+    }
+
+    public function testReportsMaintenanceModeState(): void
+    {
+        $probeResult = [
+            'attempted' => true,
+            'reachable' => true,
+            'http_status' => 200,
+            'response_time_ms' => 100,
+            'looks_blocked' => false,
+            'looks_like_error_page' => false,
+        ];
+
+        $off = $this->reporter($probeResult)->getStatus()['general']->getFields();
+        $on = $this->reporter($probeResult, true)->getStatus()['general']->getFields();
+
+        $this->assertFalse($off['maintenance_mode']->getValue());
+        $this->assertTrue($on['maintenance_mode']->getValue());
     }
 
     public function testDeclaresTheResponseTimeTrackableMetric(): void

@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model\Reporter;
 
+use Magento\Framework\App\MaintenanceMode;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
@@ -36,11 +37,13 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
 
     /**
      * @param StorefrontProbe $storefrontProbe
+     * @param MaintenanceMode $maintenanceMode
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
         private readonly StorefrontProbe $storefrontProbe,
+        private readonly MaintenanceMode $maintenanceMode,
         private readonly Field $field,
         private readonly Section $section
     ) {
@@ -68,7 +71,7 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
     public function getDescription(): string
     {
         return 'Self-probe of this store\'s own homepage: reachable, blocked (e.g. a WAF challenge), '
-            . 'or a genuine Magento error.';
+            . 'or a genuine Magento error, plus whether maintenance mode is on.';
     }
 
     /**
@@ -102,6 +105,13 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
                 self::METRIC_RESPONSE_TIME,
                 MetricDefinition::AGGREGATION_AVG,
                 unit: Unit::MILLISECONDS
+            ),
+            // A store left in maintenance mode after a deploy is "down" to customers even though
+            // the self-probe may still get a response, so it belongs next to reachability.
+            'maintenance_mode' => $this->field->bool(
+                'Maintenance Mode',
+                $this->maintenanceMode->isOn(),
+                criticalWhen: true
             ),
             'looks_blocked' => $this->field->bool('Looks Blocked', $result['looks_blocked'], criticalWhen: true),
             'looks_like_error_page' => $this->field->bool(
