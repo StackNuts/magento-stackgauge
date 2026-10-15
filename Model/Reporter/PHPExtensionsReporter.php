@@ -8,13 +8,14 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
-use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
 
-class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface
+class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface, DeclaresSubjectInterface
 {
     use DailyCadenceTrait;
-    use PlatformSectionTrait;
+    use DataSectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
 
@@ -91,5 +92,13 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
             'php_extensions' => $this->section->table('php_extensions', 'Extension Status', '', $list),
             'php_settings' => $this->section->facts('php_settings', 'PHP Settings', '', $settings),
         ];
+    }
+
+    /**
+     * Subject shared with the other reporters describing the same thing, for cross-linking.
+     */
+    public function getSubject(): string
+    {
+        return 'php';
     }
 }

@@ -19,7 +19,7 @@ use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
-use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
 
 /**
  * Flags modules where the code's declared setup_version (module.xml) has moved ahead of
@@ -30,7 +30,7 @@ use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
 class DbSchemaReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
     use DailyCadenceTrait;
-    use DataSectionTrait;
+    use PlatformSectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
     private const METRIC_DRIFTED_COUNT = 'db_schema.drifted_count';

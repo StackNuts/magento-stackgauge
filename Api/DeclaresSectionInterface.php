@@ -24,12 +24,14 @@ namespace StackNuts\StackGauge\Api;
 interface DeclaresSectionInterface
 {
     /**
-     * Site/store health: is something broken or about to be.
+     * Site/store health: is it working right now (uptime/maintenance, cron, cache, indexers,
+     * disk, logs, reports).
      */
     public const SECTION_HEALTH = 'health';
 
     /**
-     * Data-layer infrastructure: databases, queues, indexers, and their state.
+     * Infrastructure services: database, search, queues, Redis, PHP extensions, and their state.
+     * (The key stays "data"; dashboards label it "Infrastructure".)
      */
     public const SECTION_DATA = 'data';
 

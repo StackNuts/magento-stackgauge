@@ -11,11 +11,12 @@ namespace StackNuts\StackGauge\Model\Reporter;
 use Credis_Client;
 use Magento\Framework\App\DeploymentConfig;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
-use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
 use Throwable;
 
 /**
@@ -25,9 +26,9 @@ use Throwable;
  * transitive dependency of magento/framework and present on every real Magento install
  * regardless of whether phpredis is compiled in.
  */
-class RedisReporter implements ReporterInterface, DeclaresSectionInterface
+class RedisReporter implements ReporterInterface, DeclaresSectionInterface, DeclaresSubjectInterface
 {
-    use HealthSectionTrait;
+    use DataSectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
 
@@ -153,5 +154,13 @@ class RedisReporter implements ReporterInterface, DeclaresSectionInterface
             'reachable' => $this->field->bool('Reachable', $reachable, criticalWhen: false),
             'version' => $this->field->varchar('Version', $version ?? ''),
         ]);
+    }
+
+    /**
+     * Subject shared with the other reporters describing the same thing, for cross-linking.
+     */
+    public function getSubject(): string
+    {
+        return 'redis';
     }
 }

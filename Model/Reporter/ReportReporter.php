@@ -14,11 +14,11 @@ use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
-use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
 
 class ReportReporter implements ReporterInterface, DeclaresSectionInterface
 {
-    use PlatformSectionTrait;
+    use HealthSectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
 

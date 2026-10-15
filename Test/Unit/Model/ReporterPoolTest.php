@@ -13,6 +13,7 @@ use Psr\Log\LoggerInterface;
 use RuntimeException;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\FactsSection;
@@ -391,6 +392,61 @@ class ReporterPoolTest extends TestCase
         );
 
         $this->assertSame('commerce', $pool->collect()['sales']['section']);
+    }
+
+    public function testAReporterDeclaringASubjectIncludesItInTheEnvelopeAndOthersOmitIt(): void
+    {
+        $config = $this->createStub(Config::class);
+        $config->method('getDisabledReporterCodes')->willReturn([]);
+
+        $status = ['general' => $this->factsSection(['orders' => (new Field())->number('Orders', 5)])];
+        $withSubject = new class ($this->fakeReporterWithSection('cron_perf', 'performance', $status)) implements
+            ReporterInterface,
+            DeclaresSubjectInterface {
+            public function __construct(private readonly ReporterInterface $inner)
+            {
+            }
+
+            public function getName(): string
+            {
+                return $this->inner->getName();
+            }
+
+            public function getLabel(): string
+            {
+                return $this->inner->getLabel();
+            }
+
+            public function getDescription(): string
+            {
+                return $this->inner->getDescription();
+            }
+
+            public function getSchemaVersion(): string
+            {
+                return $this->inner->getSchemaVersion();
+            }
+
+            public function getStatus(): array
+            {
+                return $this->inner->getStatus();
+            }
+
+            public function getSubject(): string
+            {
+                return 'cron';
+            }
+        };
+
+        $pool = new ReporterPool(
+            [$withSubject, $this->fakeReporterWithSection('sales', 'commerce', $status)],
+            $config,
+            $this->createStub(LoggerInterface::class)
+        );
+
+        $result = $pool->collect();
+        $this->assertSame('cron', $result['cron_perf']['subject']);
+        $this->assertArrayNotHasKey('subject', $result['sales']);
     }
 
     public function testAReporterDeclaringAnInvalidSectionHasItOmittedWithAWarning(): void

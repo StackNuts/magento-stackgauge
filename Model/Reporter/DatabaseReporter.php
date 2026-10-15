@@ -10,6 +10,7 @@ namespace StackNuts\StackGauge\Model\Reporter;
 
 use Magento\Framework\App\ResourceConnection;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
@@ -20,7 +21,7 @@ use Throwable;
 /**
  * MySQL/MariaDB version and connection health via a single SELECT VERSION().
  */
-class DatabaseReporter implements ReporterInterface, DeclaresSectionInterface, DeclaresSlotInterface
+class DatabaseReporter implements ReporterInterface, DeclaresSectionInterface, DeclaresSubjectInterface, DeclaresSlotInterface
 {
     use DataSectionTrait;
 
@@ -101,5 +102,13 @@ class DatabaseReporter implements ReporterInterface, DeclaresSectionInterface, D
     public function getSlot(): int
     {
         return 1;
+    }
+
+    /**
+     * Subject shared with the other reporters describing the same thing, for cross-linking.
+     */
+    public function getSubject(): string
+    {
+        return 'database';
     }
 }

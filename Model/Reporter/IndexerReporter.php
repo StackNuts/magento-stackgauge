@@ -20,12 +20,12 @@ use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
-use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
 use Throwable;
 
 class IndexerReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
-    use DataSectionTrait;
+    use HealthSectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
 

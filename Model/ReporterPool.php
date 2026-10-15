@@ -12,6 +12,7 @@ use InvalidArgumentException;
 use Psr\Log\LoggerInterface;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
+use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\SectionInterface;
 use Throwable;
@@ -147,6 +148,10 @@ class ReporterPool
                         $section
                     ));
                 }
+            }
+
+            if ($reporter instanceof DeclaresSubjectInterface && $reporter->getSubject() !== '') {
+                $result['subject'] = $reporter->getSubject();
             }
 
             // An ordered list, not a map - display order matters, and each section already

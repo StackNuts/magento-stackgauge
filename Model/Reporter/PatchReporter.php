@@ -22,7 +22,7 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Api\Section\SectionInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
-use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\SecuritySectionTrait;
 use Throwable;
 
 /**
@@ -45,7 +45,7 @@ use Throwable;
 class PatchReporter implements ReporterInterface, DeclaresCadenceInterface, DeclaresSectionInterface
 {
     use DailyCadenceTrait;
-    use PlatformSectionTrait;
+    use SecuritySectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
     private const MAX_UNRECOGNIZED_OUTPUT_LENGTH = 3600;

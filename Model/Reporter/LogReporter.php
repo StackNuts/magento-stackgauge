@@ -20,7 +20,7 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\LogOffsetStore;
-use StackNuts\StackGauge\Model\Reporter\Concern\PlatformSectionTrait;
+use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
 use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 use Throwable;
 
@@ -52,7 +52,7 @@ use Throwable;
  */
 class LogReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
 {
-    use PlatformSectionTrait;
+    use HealthSectionTrait;
 
     private const SCHEMA_VERSION = '1.1';
     private const METRIC_EXCEPTION_COUNT = 'logs.exception_count';
