@@ -13,6 +13,7 @@ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductColl
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSlotInterface;
+use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
@@ -26,7 +27,7 @@ use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
  * collection rather than hand-rolled SQL since "status" is an EAV attribute, not a flat
  * column; getSize() alone still keeps this a single COUNT(*) query.
  */
-class CatalogReporter implements ReporterInterface, MetricCatalogInterface, DeclaresCadenceInterface, DeclaresSectionInterface, DeclaresSlotInterface
+class CatalogReporter implements ReporterInterface, MetricCatalogInterface, DeclaresCadenceInterface, DeclaresSectionInterface, DeclaresSlotInterface, DeclaresSubjectInterface
 {
     use DailyCadenceTrait;
     use CommerceSectionTrait;
@@ -127,5 +128,13 @@ class CatalogReporter implements ReporterInterface, MetricCatalogInterface, Decl
     public function getSlot(): int
     {
         return 1;
+    }
+
+    /**
+     * Subject shared with the other reporters describing the same thing, for cross-linking.
+     */
+    public function getSubject(): string
+    {
+        return 'catalog';
     }
 }

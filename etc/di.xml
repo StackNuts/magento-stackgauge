@@ -58,10 +58,12 @@
                 <item name="payments" xsi:type="object">StackNuts\StackGauge\Model\Reporter\PaymentMethodsReporter</item>
                 <item name="php_extensions" xsi:type="object">StackNuts\StackGauge\Model\Reporter\PHPExtensionsReporter</item>
                 <item name="product_health" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ProductHealthReporter</item>
+                <item name="pricing" xsi:type="object">StackNuts\StackGauge\Model\Reporter\PricingReporter</item>
                 <item name="inventory" xsi:type="object">StackNuts\StackGauge\Model\Reporter\InventoryReporter</item>
                 <item name="customers" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CustomerSignalsReporter</item>
                 <item name="abandoned_carts" xsi:type="object">StackNuts\StackGauge\Model\Reporter\AbandonedCartsReporter</item>
                 <item name="catalog" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CatalogReporter</item>
+                <item name="category_health" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CategoryHealthReporter</item>
                 <item name="coupons" xsi:type="object">StackNuts\StackGauge\Model\Reporter\CouponsReporter</item>
             </argument>
         </arguments>
