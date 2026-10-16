@@ -14,7 +14,11 @@ use Psr\Log\LoggerInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\PatchInstallerReporter;
+use StackNuts\StackGauge\Model\Config;
+use StackNuts\StackGauge\Model\Util\Clock;
+use StackNuts\StackGauge\Model\Util\CommandTimeout;
 use StackNuts\StackGauge\Model\Util\ComposerLockReader;
+use StackNuts\StackGauge\Model\Util\JsonFileCache;
 
 class PatchInstallerReporterTest extends TestCase
 {
@@ -50,7 +54,8 @@ class PatchInstallerReporterTest extends TestCase
     private function reporter(
         ?array $lockPackages,
         string $shellOutput = '',
-        ?Shell $shell = null
+        ?Shell $shell = null,
+        string $composerBinary = 'composer'
     ): PatchInstallerReporter {
         $composerLockReader = $this->createMock(ComposerLockReader::class);
         $composerLockReader->method('getDecoded')->willReturn(
@@ -73,15 +78,23 @@ class PatchInstallerReporterTest extends TestCase
             $shell->method('execute')->willReturn($shellOutput);
         }
 
+        $logger = $this->createMock(LoggerInterface::class);
+        $timeout = $this->createMock(CommandTimeout::class);
+        $timeout->method('prefix')->willReturn('timeout 120 ');
+        $config = $this->createMock(Config::class);
+        $config->method('getComposerBinary')->willReturn($composerBinary);
+
         return new PatchInstallerReporter(
             $composerLockReader,
             $filesystem,
-            new File(),
             $shell,
             new Json(),
-            $this->createMock(LoggerInterface::class),
+            $logger,
             new Field(),
-            new Section()
+            new Section(),
+            new JsonFileCache($filesystem, new File(), new Json(), new Clock(), $logger),
+            $timeout,
+            $config
         );
     }
 
@@ -234,5 +247,25 @@ class PatchInstallerReporterTest extends TestCase
         $status = $this->reporter($this->installedPackages(), $output, $shell)->getStatus();
 
         $this->assertSame('FRESH-ID', $status['applied_patches']->getRows()[0]->getValue()['id']->getValue());
+    }
+
+    public function testRendersCommandWithConfiguredBinaryTimeoutAndNoStdin(): void
+    {
+        $rendered = null;
+        $shell = $this->createMock(Shell::class);
+        $shell->method('execute')->willReturnCallback(function (string $cmd, array $args) use (&$rendered) {
+            $rendered = (new \Magento\Framework\Shell\CommandRenderer())->render($cmd, $args);
+
+            return '{"patches":[]}';
+        });
+
+        $this->reporter($this->installedPackages(), '', $shell, '/opt/bin/composer')->getStatus();
+
+        $this->assertMatchesRegularExpression(
+            '#^\{ cd \'' . preg_quote($this->root, '#') . '\' && (COMPOSER_HOME=\'[^\']+\' )?timeout 120 '
+            . '\'/opt/bin/composer\' magento-patches:status --json --no-interaction --no-ansi '
+            . '< /dev/null 2>/dev/null; \} 2>&1$#',
+            (string)$rendered
+        );
     }
 }

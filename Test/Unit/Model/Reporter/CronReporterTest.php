@@ -4,8 +4,9 @@ declare(strict_types=1);
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
 use PHPUnit\Framework\TestCase;
-use Magento\Cron\Model\ResourceModel\Schedule\Collection as ScheduleCollection;
-use Magento\Cron\Model\ResourceModel\Schedule\CollectionFactory as ScheduleCollectionFactory;
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Adapter\AdapterInterface;
+use Magento\Framework\DB\Select;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
@@ -27,67 +28,35 @@ class CronReporterTest extends TestCase
         return $byJobCode;
     }
 
-    private function scheduleRow(string $jobCode, string $status, ?string $createdAt, ?string $finishedAt, ?string $scheduledAt): object
+    /**
+     * @param array<string, string> $lastSuccess job_code => MAX(finished_at)
+     * @param array<string, string> $nextScheduled job_code => MIN(scheduled_at)
+     */
+    private function reporter(array $lastSuccess, array $nextScheduled, ?string $mostRecentCreatedAt): CronReporter
     {
-        return new class ($jobCode, $status, $createdAt, $finishedAt, $scheduledAt) {
-            public function __construct(
-                private string $jobCode,
-                private string $status,
-                private ?string $createdAt,
-                private ?string $finishedAt,
-                private ?string $scheduledAt
-            ) {
-            }
+        $select = $this->createMock(Select::class);
+        foreach (['from', 'where', 'group', 'order', 'limit'] as $method) {
+            $select->method($method)->willReturnSelf();
+        }
 
-            public function getJobCode(): string
-            {
-                return $this->jobCode;
-            }
+        $connection = $this->createMock(AdapterInterface::class);
+        $connection->method('select')->willReturn($select);
+        // getStatus() asks for last successes first, then next scheduled.
+        $connection->method('fetchPairs')->willReturnOnConsecutiveCalls($lastSuccess, $nextScheduled);
+        $connection->method('fetchOne')->willReturn($mostRecentCreatedAt ?? false);
 
-            public function getStatus(): string
-            {
-                return $this->status;
-            }
+        $resource = $this->createMock(ResourceConnection::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
 
-            public function getCreatedAt(): ?string
-            {
-                return $this->createdAt;
-            }
-
-            public function getFinishedAt(): ?string
-            {
-                return $this->finishedAt;
-            }
-
-            public function getScheduledAt(): ?string
-            {
-                return $this->scheduledAt;
-            }
-        };
-    }
-
-    private function reporterWithRows(array $rows): CronReporter
-    {
-        $collection = $this->createMock(ScheduleCollection::class);
-        $collection->method('setOrder')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getIterator')->willReturn(new \ArrayIterator($rows));
-
-        $factory = $this->createMock(ScheduleCollectionFactory::class);
-        $factory->method('create')->willReturn($collection);
-
-        return new CronReporter($factory, new Field(), new Section());
+        return new CronReporter($resource, new Field(), new Section());
     }
 
     public function testAliveIsTrueWhenMostRecentRowIsRecent(): void
     {
         $now = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-        $reporter = $this->reporterWithRows([
-            $this->scheduleRow('cron_dm', 'success', $now, $now, null),
-        ]);
 
-        $status = $reporter->getStatus();
-        $alive = $status['general']->getFields()['alive'];
+        $alive = $this->reporter([], [], $now)->getStatus()['general']->getFields()['alive'];
 
         $this->assertTrue($alive->getValue());
         $this->assertFalse($alive->jsonSerialize()['critical_when']);
@@ -96,22 +65,41 @@ class CronReporterTest extends TestCase
     public function testAliveIsFalseWhenMostRecentRowIsStale(): void
     {
         $stale = (new \DateTimeImmutable('-2 hours', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-        $reporter = $this->reporterWithRows([
-            $this->scheduleRow('cron_dm', 'success', $stale, $stale, null),
-        ]);
 
-        $status = $reporter->getStatus();
+        $status = $this->reporter([], [], $stale)->getStatus();
 
         $this->assertFalse($status['general']->getFields()['alive']->getValue());
     }
 
+    public function testAliveIsFalseWhenThereAreNoScheduleRows(): void
+    {
+        $general = $this->reporter([], [], null)->getStatus()['general']->getFields();
+
+        $this->assertFalse($general['alive']->getValue());
+        $this->assertSame('', $general['last_schedule_generated_at']->getValue());
+    }
+
+    public function testTimestampsAreDatetimeFields(): void
+    {
+        $status = $this->reporter(
+            ['cron_dm' => '2026-05-07 12:00:05'],
+            ['cron_dm' => '2026-05-07 13:00:00'],
+            '2026-05-07 12:00:00'
+        )->getStatus();
+
+        $job = $status['jobs']->getRows()[0]->getValue();
+        $this->assertSame('datetime', $job['last_success_at']->getType());
+        $this->assertSame('datetime', $job['next_scheduled_at']->getType());
+        $this->assertSame('datetime', $status['general']->getFields()['last_schedule_generated_at']->getType());
+    }
+
     public function testJobsReportLastSuccessAndNextScheduledPerJobCode(): void
     {
-        $reporter = $this->reporterWithRows([
-            $this->scheduleRow('cron_dm', 'success', '2026-05-07 12:00:00', '2026-05-07 12:00:05', null),
-            $this->scheduleRow('cron_dm', 'pending', '2026-05-07 12:00:00', null, '2026-05-07 13:00:00'),
-            $this->scheduleRow('ess_m2epro', 'pending', '2026-05-07 12:00:00', null, '2026-05-07 12:30:00'),
-        ]);
+        $reporter = $this->reporter(
+            ['cron_dm' => '2026-05-07 12:00:05'],
+            ['cron_dm' => '2026-05-07 13:00:00', 'ess_m2epro' => '2026-05-07 12:30:00'],
+            '2026-05-07 12:00:00'
+        );
 
         $jobs = $this->rowsByJobCode($reporter->getStatus()['jobs']->getRows());
 
@@ -126,15 +114,13 @@ class CronReporterTest extends TestCase
         $this->assertSame('2026-05-07 12:30:00', $essM2epro['next_scheduled_at']->getValue());
     }
 
-    public function testNextScheduledPicksTheEarliestPendingRowPerJob(): void
+    public function testAJobWithOnlyASuccessRowIsStillListed(): void
     {
-        $reporter = $this->reporterWithRows([
-            $this->scheduleRow('cron_dm', 'pending', '2026-05-07 12:00:00', null, '2026-05-07 14:00:00'),
-            $this->scheduleRow('cron_dm', 'pending', '2026-05-07 12:00:00', null, '2026-05-07 13:00:00'),
-        ]);
+        $jobs = $this->rowsByJobCode(
+            $this->reporter(['hourly_job' => '2026-05-07 12:00:05'], [], '2026-05-07 12:00:00')
+                ->getStatus()['jobs']->getRows()
+        );
 
-        $jobs = $this->rowsByJobCode($reporter->getStatus()['jobs']->getRows());
-
-        $this->assertSame('2026-05-07 13:00:00', $jobs['cron_dm']->getValue()['next_scheduled_at']->getValue());
+        $this->assertSame('', $jobs['hourly_job']->getValue()['next_scheduled_at']->getValue());
     }
 }

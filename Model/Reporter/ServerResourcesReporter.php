@@ -26,6 +26,11 @@ use Throwable;
  * isn't readable (some hardened containers hide it) all fall back to a "measurable: false" plus
  * zeros, with no trackable metric field emitted in that case - only a genuine reading can ever
  * carry a numeric field that could alert.
+ *
+ * Known limits, accepted: this measures the node the cron process runs on (which may not be the
+ * web node on a multi-server setup) and does so while cron itself is busy collecting reports,
+ * so CPU readings lean slightly high. Metrics aggregate hourly samples, so an AVG over a 60
+ * minute window is effectively one sample.
  */
 class ServerResourcesReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface
 {
@@ -494,10 +499,13 @@ class ServerResourcesReporter implements ReporterInterface, MetricCatalogInterfa
 
         $values = array_map('floatval', $fields);
 
+        // Only the first eight columns (user..steal) make up the total: guest and guest_nice
+        // (columns 9 and 10) are already counted inside user and nice, so summing them too
+        // would double-count time on a host that runs virtual machines.
         return [
             'idle' => $values[3] ?? 0.0,
             'iowait' => $values[4] ?? 0.0,
-            'total' => array_sum($values),
+            'total' => array_sum(array_slice($values, 0, 8)),
         ];
     }
 

@@ -106,6 +106,34 @@ class TlsCertificateInspectorTest extends TestCase
         $this->assertSame(20, $result['days_remaining']);
     }
 
+    public function testTransientVerifiedFailureIsRetriedAndStaysTrusted(): void
+    {
+        $cert = $this->parsedCert('2026-11-05 00:00:00');
+        $inspector = new class ($this->clockAt('2026-10-16 00:00:00'), $cert) extends TlsCertificateInspector {
+            public int $verifiedCalls = 0;
+
+            public function __construct(Clock $clock, private readonly array $cert)
+            {
+                parent::__construct($clock);
+            }
+
+            protected function connectAndParse(string $host, bool $verifyPeer): ?array
+            {
+                if (!$verifyPeer) {
+                    return $this->cert;
+                }
+
+                return ++$this->verifiedCalls === 1 ? null : $this->cert;
+            }
+        };
+
+        $result = $inspector->inspect('flaky.test');
+
+        $this->assertTrue($result['trusted']);
+        $this->assertNull($result['error']);
+        $this->assertSame(2, $inspector->verifiedCalls);
+    }
+
     public function testConnectionFailureInBothAttemptsReportsNotConnected(): void
     {
         $result = $this->inspector($this->clockAt('2026-10-16 00:00:00'), null, null)->inspect('unreachable.test');

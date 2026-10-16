@@ -12,7 +12,10 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\App\MaintenanceMode;
+use Magento\Framework\UrlInterface;
+use Magento\Store\Api\Data\StoreInterface;
 use Magento\Store\Model\ScopeInterface as StoreScopeInterface;
+use Magento\Store\Model\Store;
 use Magento\Store\Model\StoreManagerInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\Field\Field;
@@ -39,6 +42,10 @@ use StackNuts\StackGauge\Model\TlsCertificateInspector;
  * dashboard's own IP still gets a real answer. This check is deliberately not part of
  * Model\HeartbeatSender - a certificate's expiry changes on the order of weeks, not minutes, so
  * running it every few minutes forever would be wasted load for no benefit.
+ *
+ * Worst-case run time is long: the storefront probe (3s connect, 5s total) plus up to
+ * MAX_TLS_HOSTS hosts, each with a verified and an unverified TLS attempt of up to 5s, is about
+ * 55 seconds. That is accepted for an hourly reporter in its own cron process.
  */
 class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, MetricCatalogInterface
 {
@@ -283,11 +290,7 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
         $hosts = [];
 
         foreach ($this->storeManager->getStores(true) as $store) {
-            $baseUrl = (string)$this->scopeConfig->getValue(
-                'web/secure/base_url',
-                StoreScopeInterface::SCOPE_STORES,
-                $store->getId()
-            );
+            $baseUrl = $this->secureBaseUrl($store);
 
             $host = $this->httpsHostFrom($baseUrl);
             if ($host !== null) {
@@ -297,6 +300,30 @@ class UptimeReporter implements ReporterInterface, DeclaresSectionInterface, Met
         }
 
         return array_slice(array_keys($hosts), 0, self::MAX_TLS_HOSTS);
+    }
+
+    /**
+     * The store's resolved secure base URL. The raw web/secure/base_url config can still hold a
+     * {{secure_base_url}}-style placeholder, which has no host and would silently skip the TLS
+     * check, so Store::getBaseUrl() (which resolves placeholders) is preferred; the raw value is
+     * only the fallback for a store object that doesn't expose it.
+     *
+     * @param StoreInterface $store
+     */
+    private function secureBaseUrl(StoreInterface $store): string
+    {
+        if ($store instanceof Store) {
+            $resolved = (string)$store->getBaseUrl(UrlInterface::URL_TYPE_WEB, true);
+            if ($resolved !== '') {
+                return $resolved;
+            }
+        }
+
+        return (string)$this->scopeConfig->getValue(
+            'web/secure/base_url',
+            StoreScopeInterface::SCOPE_STORES,
+            $store->getId()
+        );
     }
 
     /**

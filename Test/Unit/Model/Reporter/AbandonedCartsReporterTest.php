@@ -1,11 +1,17 @@
 <?php
+/**
+ * Copyright © StackNuts. All rights reserved.
+ * See LICENSE for license details.
+ */
+
 declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Adapter\AdapterInterface;
+use Magento\Framework\DB\Select;
 use PHPUnit\Framework\TestCase;
-use Magento\Quote\Model\ResourceModel\Quote\Collection as QuoteCollection;
-use Magento\Quote\Model\ResourceModel\Quote\CollectionFactory as QuoteCollectionFactory;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\AbandonedCartsReporter;
@@ -13,59 +19,63 @@ use StackNuts\StackGauge\Model\Util\Clock;
 
 class AbandonedCartsReporterTest extends TestCase
 {
-    public function testGetStatusReturnsCountsAndSamples(): void
+    /**
+     * @param array<string, mixed> $totals
+     * @param list<array<string, string>> $samples
+     */
+    private function reporter(array $totals, array $samples): AbandonedCartsReporter
     {
-        $colCount = $this->createMock(QuoteCollection::class);
-        $colCount->method('addFieldToFilter')->willReturnSelf();
-        $colCount->method('getSize')->willReturn(3);
+        $select = $this->createMock(Select::class);
+        foreach (['from', 'where', 'order', 'limit'] as $method) {
+            $select->method($method)->willReturnSelf();
+        }
 
-        $sampleItem = new class
-        {
-            public function getId()
-            {
-                return 101;
-            }
-        };
-        $colSample = $this->createMock(QuoteCollection::class);
-        $colSample->method('addFieldToFilter')->willReturnSelf();
-        $colSample->method('setPageSize')->willReturnSelf();
-        $colSample->method('getItems')->willReturn([$sampleItem]);
+        $connection = $this->createMock(AdapterInterface::class);
+        $connection->method('select')->willReturn($select);
+        $connection->method('quote')->willReturnCallback(fn ($v) => "'" . $v . "'");
+        $connection->method('fetchRow')->willReturn($totals);
+        $connection->method('fetchAll')->willReturn($samples);
 
-        $factory = $this->createMock(QuoteCollectionFactory::class);
-        $factory->method('create')->willReturnOnConsecutiveCalls($colCount, $colSample);
+        $resource = $this->createMock(ResourceConnection::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
 
-        $reporter = new AbandonedCartsReporter($factory, new Clock(), new Field(), new Section());
-        $status = $reporter->getStatus();
-
-        $this->assertArrayHasKey('general', $status);
-        $this->assertArrayHasKey('samples', $status);
-        $this->assertSame(3, $status['general']->getFields()['count']->getValue());
-        $this->assertCount(1, $status['samples']->getRows());
+        return new AbandonedCartsReporter($resource, new Clock(), new Field(), new Section());
     }
 
-    public function testCountIsTrackedAsGrowthNotAnAbsoluteSnapshot(): void
+    public function testGetStatusReturnsCountsAndSamples(): void
     {
-        // Magento's own quote cleanup only removes carts 30+ days old, while this reporter
-        // calls a cart "abandoned" after 24h - so the raw count always carries a large,
-        // normal backlog. Alerting must be on growth (delta), not the absolute value, or the
-        // default threshold would be permanently breached on any real store.
-        $factory = $this->createMock(\Magento\Quote\Model\ResourceModel\Quote\CollectionFactory::class);
-        $col = $this->createMock(QuoteCollection::class);
-        $col->method('addFieldToFilter')->willReturnSelf();
-        $col->method('setPageSize')->willReturnSelf();
-        $col->method('getSize')->willReturn(0);
-        $col->method('getItems')->willReturn([]);
-        $factory->method('create')->willReturn($col);
+        $status = $this->reporter(
+            ['total' => '40', 'recent' => '3'],
+            [['entity_id' => '101', 'updated_at' => '2026-10-15 10:00:00']]
+        )->getStatus();
 
-        $reporter = new AbandonedCartsReporter($factory, new Clock(), new Field(), new Section());
+        $general = $status['general']->getFields();
+        $this->assertSame(3, $general['count']->getValue());
+        $this->assertSame(40, $general['total_idle']->getValue());
+        $rows = $status['samples']->getRows();
+        $this->assertCount(1, $rows);
+        $this->assertSame('101', $rows[0]->getValue()['quote_id']->getValue());
+        $this->assertSame('datetime', $rows[0]->getValue()['updated_at']->getType());
+    }
 
-        $this->assertSame(
-            'delta',
-            $reporter->getStatus()['general']->getFields()['count']->getAggregation()
-        );
+    public function testNoCartsReportsZero(): void
+    {
+        $status = $this->reporter(['total' => '0', 'recent' => null], [])->getStatus();
+
+        $this->assertSame(0, $status['general']->getFields()['count']->getValue());
+        $this->assertSame([], $status['samples']->getRows());
+    }
+
+    public function testCountIsALatestValueAgainstAThresholdNotADelta(): void
+    {
+        $reporter = $this->reporter(['total' => '0', 'recent' => '0'], []);
+
+        $this->assertSame('latest', $reporter->getStatus()['general']->getFields()['count']->getAggregation());
 
         $metrics = $reporter->getTrackableMetrics();
         $this->assertCount(1, $metrics);
-        $this->assertSame('delta', $metrics[0]->getAggregation());
+        $this->assertSame('abandoned_carts.count', $metrics[0]->getMetricKey());
+        $this->assertSame('latest', $metrics[0]->getAggregation());
     }
 }

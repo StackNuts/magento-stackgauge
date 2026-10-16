@@ -21,6 +21,8 @@
                 comment="Byte position last read up to"/>
         <column xsi:type="int" name="running_count" unsigned="true" nullable="false" default="0"
                 comment="Running cumulative match count for reporters that track one (e.g. exception occurrences) - unused (always 0) for files that don't track a count"/>
+        <column xsi:type="varchar" name="fingerprint" nullable="true" length="16"
+                comment="CRC32 and length of the file's first bytes (hex), to detect rotation; NULL on rows from older versions"/>
         <column xsi:type="timestamp" name="updated_at" on_update="true" nullable="false" default="CURRENT_TIMESTAMP"
                 comment="Last Updated At"/>
         <constraint xsi:type="primary" referenceId="PRIMARY">

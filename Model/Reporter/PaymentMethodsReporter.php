@@ -3,8 +3,9 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model\Reporter;
 
-use Magento\Payment\Model\Config as PaymentConfig;
 use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\ScopeInterface;
+use Magento\Store\Model\StoreManagerInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
@@ -19,13 +20,13 @@ class PaymentMethodsReporter implements ReporterInterface, DeclaresCadenceInterf
     private const SCHEMA_VERSION = '1.0';
 
     /**
-     * @param PaymentConfig $paymentConfig
+     * @param StoreManagerInterface $storeManager
      * @param ScopeConfigInterface $scopeConfig
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
-        private readonly PaymentConfig $paymentConfig,
+        private readonly StoreManagerInterface $storeManager,
         private readonly ScopeConfigInterface $scopeConfig,
         private readonly Field $field,
         private readonly Section $section
@@ -53,7 +54,7 @@ class PaymentMethodsReporter implements ReporterInterface, DeclaresCadenceInterf
      */
     public function getDescription(): string
     {
-        return 'Enabled payment methods and key configuration flags.';
+        return 'Payment methods enabled in at least one store view, and which store views.';
     }
 
     /**
@@ -73,24 +74,47 @@ class PaymentMethodsReporter implements ReporterInterface, DeclaresCadenceInterf
     }
 
     /**
-     * Reports each active payment method's code, title, and active flag.
+     * Reports each payment method switched on in at least one store view, with the store views
+     * it is active in. Reading each store's own flag (rather than the default scope, as
+     * Payment\Model\Config::getActiveMethods() does) catches a method enabled for one store view
+     * only; "active" is therefore true for every row listed, "stores" says where.
      */
     public function getStatus(): array
     {
+        $configured = $this->scopeConfig->getValue('payment');
+        $stores = $this->storeManager->getStores(false);
+
         $methods = [];
-        $active = $this->paymentConfig->getActiveMethods();
-        foreach ($active as $code => $method) {
-            $title = '';
-            if (is_object($method) && method_exists($method, 'getTitle')) {
-                $title = (string)$method->getTitle();
-            } else {
-                $title = (string)$this->scopeConfig->getValue('payment/' . $code . '/title');
+        foreach (is_array($configured) ? $configured : [] as $code => $data) {
+            if (!is_array($data) || !isset($data['model'])) {
+                continue;
             }
-            $activeFlag = (bool)$this->scopeConfig->getValue('payment/' . $code . '/active');
-            $methods[] = $this->field->array('', [
+
+            $activeIn = [];
+            foreach ($stores as $store) {
+                $flag = $this->scopeConfig->getValue(
+                    'payment/' . $code . '/active',
+                    ScopeInterface::SCOPE_STORES,
+                    $store->getId()
+                );
+                if ($flag) {
+                    $activeIn[] = (string)$store->getCode();
+                }
+            }
+            if ($activeIn === []) {
+                continue;
+            }
+
+            $title = (string)$this->scopeConfig->getValue(
+                'payment/' . $code . '/title',
+                ScopeInterface::SCOPE_STORES,
+                $stores[array_key_first($stores)]->getId()
+            );
+            $methods[] = $this->field->array((string)$code, [
                 'code' => $this->field->varchar('Code', (string)$code),
                 'title' => $this->field->varchar('Title', $title),
-                'active' => $this->field->bool('Active', $activeFlag),
+                'active' => $this->field->bool('Active', true),
+                'stores' => $this->field->varchar('Active In Stores', implode(', ', $activeIn)),
             ]);
         }
 

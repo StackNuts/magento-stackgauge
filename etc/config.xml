@@ -34,13 +34,11 @@
             </stackgauge>
         </crontab>
         <stacknuts_stackgauge>
-            <cadence>
-                <hourly_slots>3</hourly_slots>
-                <daily_slots>2</daily_slots>
-            </cadence>
             <general>
                 <enabled>0</enabled>
                 <self_probe_enabled>1</self_probe_enabled>
+                <composer_binary>composer</composer_binary>
+                <send_revenue>1</send_revenue>
                 <!-- No default here is deliberate: Model\Config::getDisabledReporterCodes() treats
                 an empty "disabled_reporters" as "disable nothing", so an unset value already
                 means every reporter in ReporterList::CODES runs - including any added by a

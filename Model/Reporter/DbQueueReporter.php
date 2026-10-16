@@ -18,7 +18,6 @@ use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
-use Throwable;
 
 /**
  * Per-queue backlog for every queue registered against Magento's own MySQL message-queue
@@ -177,55 +176,54 @@ class DbQueueReporter implements ReporterInterface, DeclaresSectionInterface, Me
     /**
      * Every registered queue name with its backlog/error counts, 0 for a queue with no
      * outstanding messages at all. A missing table (the db message-queue adapter's own schema
-     * not having been installed) is treated the same as "no queues" - this reporter must never
-     * fail a whole report over infrastructure it doesn't control.
+     * not having been installed) is treated as "no queues". A query failure is deliberately NOT
+     * caught: it propagates so ReporterPool reports the reporter as errored, rather than a
+     * failed query reading as a healthy 0 backlog.
+     *
+     * The status filter is in the WHERE clause (not inside SUM(CASE...)), so the
+     * (status, updated_at) index limits the scan to unfinished/failed rows instead of walking
+     * every COMPLETE row kept for the cleanup window; queue names are merged in PHP.
      *
      * @return list<array{name: string, backlog: int, errors: int}>
      */
     private function fetchQueueRows(): array
     {
-        try {
-            $connection = $this->resourceConnection->getConnection();
-            $queueTable = $this->resourceConnection->getTableName(self::QUEUE_TABLE);
-            $statusTable = $this->resourceConnection->getTableName(self::QUEUE_MESSAGE_STATUS_TABLE);
+        $connection = $this->resourceConnection->getConnection();
+        $queueTable = $this->resourceConnection->getTableName(self::QUEUE_TABLE);
+        $statusTable = $this->resourceConnection->getTableName(self::QUEUE_MESSAGE_STATUS_TABLE);
 
-            if (!$connection->isTableExists($queueTable) || !$connection->isTableExists($statusTable)) {
-                return [];
-            }
-
-            $backlogStatuses = [self::STATUS_NEW, self::STATUS_IN_PROGRESS, self::STATUS_RETRY_REQUIRED];
-
-            $select = $connection->select()
-                ->from(['q' => $queueTable], ['name'])
-                ->joinLeft(
-                    ['qms' => $statusTable],
-                    'qms.queue_id = q.id',
-                    []
-                )
-                ->columns([
-                    'backlog' => new Expression(
-                        'SUM(CASE WHEN qms.status IN (' . implode(',', $backlogStatuses) . ') THEN 1 ELSE 0 END)'
-                    ),
-                    'errors' => new Expression(
-                        'SUM(CASE WHEN qms.status = ' . self::STATUS_ERROR . ' THEN 1 ELSE 0 END)'
-                    ),
-                ])
-                ->group('q.id')
-                ->order('q.name ASC');
-
-            $rows = [];
-            foreach ($connection->fetchAll($select) as $row) {
-                $rows[] = [
-                    'name' => (string)$row['name'],
-                    'backlog' => (int)$row['backlog'],
-                    'errors' => (int)$row['errors'],
-                ];
-            }
-
-            return $rows;
-        } catch (Throwable) {
+        if (!$connection->isTableExists($queueTable) || !$connection->isTableExists($statusTable)) {
             return [];
         }
+
+        $counts = [];
+        $countSelect = $connection->select()
+            ->from($statusTable, ['queue_id', 'status', 'cnt' => new Expression('COUNT(*)')])
+            ->where('status IN (?)', [
+                self::STATUS_NEW,
+                self::STATUS_IN_PROGRESS,
+                self::STATUS_RETRY_REQUIRED,
+                self::STATUS_ERROR,
+            ])
+            ->group(['queue_id', 'status']);
+        foreach ($connection->fetchAll($countSelect) as $row) {
+            $queueId = (int)$row['queue_id'];
+            $key = (int)$row['status'] === self::STATUS_ERROR ? 'errors' : 'backlog';
+            $counts[$queueId][$key] = ($counts[$queueId][$key] ?? 0) + (int)$row['cnt'];
+        }
+
+        $rows = [];
+        $queueSelect = $connection->select()->from($queueTable, ['id', 'name'])->order('name ASC');
+        foreach ($connection->fetchAll($queueSelect) as $row) {
+            $queueId = (int)$row['id'];
+            $rows[] = [
+                'name' => (string)$row['name'],
+                'backlog' => $counts[$queueId]['backlog'] ?? 0,
+                'errors' => $counts[$queueId]['errors'] ?? 0,
+            ];
+        }
+
+        return $rows;
     }
 
     /**

@@ -16,58 +16,85 @@ use StackNuts\StackGauge\Model\LogOffsetStore;
 
 class LogOffsetStoreTest extends TestCase
 {
+    /**
+     * @param array<string, array{byte_offset: string, running_count: string, fingerprint?: string|null}> $rows
+     */
+    private function store(array $rows, ?AdapterInterface &$connection = null): LogOffsetStore
+    {
+        $connection = $this->createMock(AdapterInterface::class);
+        $select = $this->createMock(Select::class);
+        $select->method('from')->willReturnSelf();
+        $key = null;
+        $select->method('where')->willReturnCallback(function ($condition, $value) use ($select, &$key) {
+            $key = $value;
+            return $select;
+        });
+        $connection->method('select')->willReturn($select);
+        $connection->method('fetchRow')->willReturnCallback(function () use ($rows, &$key) {
+            return $rows[$key] ?? false;
+        });
+
+        $resourceConnection = $this->createMock(ResourceConnection::class);
+        $resourceConnection->method('getConnection')->willReturn($connection);
+        $resourceConnection->method('getTableName')->willReturnArgument(0);
+
+        return new LogOffsetStore($resourceConnection);
+    }
+
     public function testGetReturnsNullWhenNoRowStoredYet(): void
     {
-        $connection = $this->createMock(AdapterInterface::class);
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $connection->method('select')->willReturn($select);
-        $connection->method('fetchRow')->willReturn(false);
-
-        $resourceConnection = $this->createMock(ResourceConnection::class);
-        $resourceConnection->method('getConnection')->willReturn($connection);
-        $resourceConnection->method('getTableName')->willReturnArgument(0);
-
-        $store = new LogOffsetStore($resourceConnection);
-
-        $this->assertNull($store->get('exception.log'));
+        $this->assertNull($this->store([])->get('exception.log'));
     }
 
-    public function testGetReturnsTheStoredCursor(): void
+    public function testGetReadsARowWrittenByAnOlderVersionWithNoFingerprint(): void
     {
-        $connection = $this->createMock(AdapterInterface::class);
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $connection->method('select')->willReturn($select);
-        $connection->method('fetchRow')->willReturn(['byte_offset' => '1024', 'running_count' => '7']);
+        $store = $this->store(['exception.log' => ['byte_offset' => '1024', 'running_count' => '7']]);
 
-        $resourceConnection = $this->createMock(ResourceConnection::class);
-        $resourceConnection->method('getConnection')->willReturn($connection);
-        $resourceConnection->method('getTableName')->willReturnArgument(0);
-
-        $store = new LogOffsetStore($resourceConnection);
-
-        $this->assertSame(['byte_offset' => 1024, 'running_count' => 7], $store->get('exception.log'));
+        $this->assertSame(
+            ['byte_offset' => 1024, 'running_count' => 7, 'fingerprint_crc' => 0, 'fingerprint_length' => 0],
+            $store->get('exception.log')
+        );
     }
 
-    public function testSaveUpsertsByFilePath(): void
+    public function testGetParsesTheFingerprintColumn(): void
     {
-        $connection = $this->createMock(AdapterInterface::class);
+        $store = $this->store([
+            'exception.log' => ['byte_offset' => '1024', 'running_count' => '7', 'fingerprint' => '63:200'],
+        ]);
+
+        $this->assertSame(
+            ['byte_offset' => 1024, 'running_count' => 7, 'fingerprint_crc' => 99, 'fingerprint_length' => 512],
+            $store->get('exception.log')
+        );
+    }
+
+    public function testStagingWritesNothingUntilCommit(): void
+    {
+        $store = $this->store([], $connection);
+        $connection->expects($this->never())->method('insertOnDuplicate');
+        $store->stage('exception.log', 2048, 9, 5, 100);
+        $store->discard();
+        $store->commit();
+    }
+
+    public function testCommitUpsertsTheCursorWithItsFingerprintOnce(): void
+    {
+        $store = $this->store([], $connection);
         $connection->expects($this->once())
             ->method('insertOnDuplicate')
             ->with(
                 'stacknuts_stackgauge_log_offset',
-                ['file_path' => 'exception.log', 'byte_offset' => 2048, 'running_count' => 9],
-                ['byte_offset', 'running_count']
+                [
+                    'file_path' => 'exception.log',
+                    'byte_offset' => 2048,
+                    'running_count' => 9,
+                    'fingerprint' => '5:64',
+                ],
+                ['byte_offset', 'running_count', 'fingerprint']
             );
 
-        $resourceConnection = $this->createMock(ResourceConnection::class);
-        $resourceConnection->method('getConnection')->willReturn($connection);
-        $resourceConnection->method('getTableName')->willReturnArgument(0);
-
-        $store = new LogOffsetStore($resourceConnection);
-        $store->save('exception.log', 2048, 9);
+        $store->stage('exception.log', 2048, 9, 5, 100);
+        $store->commit();
+        $store->commit();
     }
 }

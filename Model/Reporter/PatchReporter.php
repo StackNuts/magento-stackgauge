@@ -23,6 +23,10 @@ use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Api\Section\SectionInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\SecuritySectionTrait;
+use StackNuts\StackGauge\Model\Util\CommandTimeout;
+use StackNuts\StackGauge\Model\Util\ComposerLockReader;
+use StackNuts\StackGauge\Model\Util\JsonFileCache;
+use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 use Throwable;
 
 /**
@@ -48,7 +52,8 @@ class PatchReporter implements ReporterInterface, DeclaresCadenceInterface, Decl
     use SecuritySectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
-    private const MAX_UNRECOGNIZED_OUTPUT_LENGTH = 3600;
+    private const MAX_UNRECOGNIZED_OUTPUT_LENGTH = 1000;
+    private const COMMAND_TIMEOUT_SECONDS = 120;
     private const CACHE_TTL_SECONDS = 86400;
     private const CACHE_RELATIVE_PATH = 'stackgauge/patch_status_cache.json';
 
@@ -60,6 +65,10 @@ class PatchReporter implements ReporterInterface, DeclaresCadenceInterface, Decl
      * @param LoggerInterface $logger
      * @param Field $field
      * @param Section $section
+     * @param JsonFileCache $cache
+     * @param ComposerLockReader $composerLockReader
+     * @param CommandTimeout $commandTimeout
+     * @param LogLineRedactor $redactor
      */
     public function __construct(
         private readonly Filesystem $filesystem,
@@ -68,7 +77,11 @@ class PatchReporter implements ReporterInterface, DeclaresCadenceInterface, Decl
         private readonly Json $json,
         private readonly LoggerInterface $logger,
         private readonly Field $field,
-        private readonly Section $section
+        private readonly Section $section,
+        private readonly JsonFileCache $cache,
+        private readonly ComposerLockReader $composerLockReader,
+        private readonly CommandTimeout $commandTimeout,
+        private readonly LogLineRedactor $redactor
     ) {
     }
 
@@ -111,13 +124,14 @@ class PatchReporter implements ReporterInterface, DeclaresCadenceInterface, Decl
      */
     public function getStatus(): array
     {
-        $cached = $this->readCache();
+        $fingerprint = $this->composerLockReader->getMtime();
+        $cached = $this->cache->read(self::CACHE_RELATIVE_PATH, self::CACHE_TTL_SECONDS, $fingerprint);
         if ($cached !== null) {
             return $this->result(true, null, $cached);
         }
 
-        $binary = rtrim($this->filesystem->getDirectoryRead(DirectoryList::ROOT)->getAbsolutePath(), '/')
-            . '/vendor/bin/patch-status';
+        $root = rtrim($this->filesystem->getDirectoryRead(DirectoryList::ROOT)->getAbsolutePath(), '/');
+        $binary = $root . '/vendor/bin/patch-status';
 
         // is_executable() has no Magento\Framework\Filesystem\DriverInterface equivalent -
         // the driver abstraction only wraps read/write/stat operations, not exec-bit checks.
@@ -126,101 +140,60 @@ class PatchReporter implements ReporterInterface, DeclaresCadenceInterface, Decl
             return $this->result(false);
         }
 
-        try {
-            $output = $this->shell->execute($binary . ' %s', ['--format=json']);
-        } catch (Throwable $e) {
-            $this->logger->warning('StackGauge: vendor/bin/patch-status execution failed: ' . $e->getMessage());
-
-            return $this->result(false);
-        }
+        // Run from the Magento root with an explicit --root (the tool defaults to "."), with
+        // stdin closed (it prompts for repo.magento.com keys otherwise) and stderr dropped.
+        // The group keeps Shell's appended "2>&1" from re-merging stderr into the output.
+        $command = '{ cd %s && ' . $this->commandTimeout->prefix(self::COMMAND_TIMEOUT_SECONDS)
+            . '%s --root=%s --format=json < /dev/null 2>/dev/null; }';
 
         try {
-            $data = $this->json->unserialize($output);
+            $output = $this->shell->execute($command, [$root, $binary, $root]);
         } catch (Throwable $e) {
-            $this->logger->warning('StackGauge: vendor/bin/patch-status returned unparseable JSON: ' . $e->getMessage());
-            $data = null;
+            // The tool exits 1 after printing usable JSON when the registry is unreachable.
+            $output = $e->getPrevious() !== null ? $e->getPrevious()->getMessage() : '';
+            if (!is_array($this->decode($output))) {
+                $this->logger->warning('StackGauge: vendor/bin/patch-status execution failed: ' . $e->getMessage());
+
+                return $this->result(false);
+            }
         }
+
+        $data = $this->decode($output);
 
         if (!is_array($data)) {
-            return $this->result(true, substr(trim($output), 0, self::MAX_UNRECOGNIZED_OUTPUT_LENGTH));
+            return $this->result(true, $this->sanitizeOutput($output));
         }
 
-        $this->writeCache($data);
+        $this->cache->write(self::CACHE_RELATIVE_PATH, $data, $fingerprint);
 
         return $this->result(true, null, $data);
     }
 
     /**
-     * Reads a still-fresh cached patch-status result, if one exists.
-     *
-     * Never throws - a missing, corrupt, stale or wrong-shaped cache file is treated the same
-     * as no cache at all, since the caller falls back to a live run either way.
-     *
+     * @param string $output
      * @return array<string,mixed>|null
      */
-    private function readCache(): ?array
+    private function decode(string $output): ?array
     {
         try {
-            $path = $this->cachePath();
+            $data = $this->json->unserialize($output);
+        } catch (Throwable $e) {
+            $this->logger->warning('StackGauge: vendor/bin/patch-status returned unparseable JSON: ' . $e->getMessage());
 
-            if (!$this->filesystemDriver->isExists($path)) {
-                return null;
-            }
-
-            $decoded = $this->json->unserialize($this->filesystemDriver->fileGetContents($path));
-
-            if (!is_array($decoded)
-                || !is_int($decoded['recorded_at'] ?? null)
-                || !is_array($decoded['data'] ?? null)
-            ) {
-                return null;
-            }
-
-            if (time() - $decoded['recorded_at'] >= self::CACHE_TTL_SECONDS) {
-                return null;
-            }
-
-            return $decoded['data'];
-        } catch (Throwable) {
             return null;
         }
+
+        return is_array($data) ? $data : null;
     }
 
     /**
-     * Best-effort write of a fresh patch-status result to the cache.
+     * Redacts secrets/paths-with-credentials from unparseable tool output and caps its length.
      *
-     * A write failure must not fail this reporter - the next call simply runs patch-status
-     * live again.
-     *
-     * @param array<string,mixed> $data
-     * @return void
+     * @param string $output
      */
-    private function writeCache(array $data): void
+    private function sanitizeOutput(string $output): string
     {
-        try {
-            $path = $this->cachePath();
-            $dir = $this->filesystemDriver->getParentDirectory($path);
-
-            if (!$this->filesystemDriver->isDirectory($dir)) {
-                $this->filesystemDriver->createDirectory($dir);
-            }
-
-            $this->filesystemDriver->filePutContents(
-                $path,
-                $this->json->serialize(['recorded_at' => time(), 'data' => $data])
-            );
-        } catch (Throwable $e) {
-            $this->logger->warning('StackGauge: could not write patch-status cache: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Absolute path to the cached patch-status result, under var/.
-     */
-    private function cachePath(): string
-    {
-        return rtrim($this->filesystem->getDirectoryRead(DirectoryList::VAR_DIR)->getAbsolutePath(), '/')
-            . '/' . self::CACHE_RELATIVE_PATH;
+        return substr($this->redactor->redact(trim($output)), 0, self::MAX_UNRECOGNIZED_OUTPUT_LENGTH);
     }
 
     /**

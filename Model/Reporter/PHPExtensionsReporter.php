@@ -19,7 +19,14 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
 
     private const SCHEMA_VERSION = '1.0';
 
-    private const EXTENSIONS = ['intl', 'gd', 'opcache', 'json', 'curl', 'mbstring'];
+    /**
+     * Magento's required and commonly missed extensions. json is always built in on PHP 8, so
+     * checking it says nothing.
+     */
+    private const EXTENSIONS = [
+        'bcmath', 'ctype', 'curl', 'dom', 'gd', 'intl', 'mbstring', 'opcache', 'openssl', 'pdo_mysql',
+        'simplexml', 'soap', 'sockets', 'sodium', 'xsl', 'zip',
+    ];
 
     /**
      * @param Field $field
@@ -44,7 +51,7 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
      */
     public function getLabel(): string
     {
-        return 'PHP Extensions';
+        return 'PHP Extensions (CLI)';
     }
 
     /**
@@ -52,7 +59,7 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
      */
     public function getDescription(): string
     {
-        return 'Presence and versions of important PHP extensions.';
+        return 'Presence and versions of important PHP extensions, as seen by the CLI/cron PHP. The web (FPM) PHP can be configured differently.';
     }
 
     /**
@@ -64,7 +71,7 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
     }
 
     /**
-     * Reports enabled/version for each extension in EXTENSIONS, plus memory_limit and OPcache enabled state.
+     * Reports enabled/version for each extension in EXTENSIONS, plus the CLI memory_limit and OPcache state.
      */
     public function getStatus(): array
     {
@@ -72,7 +79,7 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
         foreach (self::EXTENSIONS as $ext) {
             $enabled = extension_loaded($ext);
             $version = $enabled ? (string)phpversion($ext) : '';
-            $list[] = $this->field->array('', [
+            $list[] = $this->field->array($ext, [
                 'name' => $this->field->varchar('Name', $ext),
                 'enabled' => $this->field->bool('Enabled', $enabled, criticalWhen: false),
                 'version' => $this->field->varchar('Version', $version),
@@ -80,12 +87,10 @@ class PHPExtensionsReporter implements ReporterInterface, DeclaresCadenceInterfa
         }
 
         $settings = [
-            'memory_limit' => $this->field->varchar('Memory Limit', (string)ini_get('memory_limit')),
-            'opcache_enabled' => $this->field->bool(
-                'OPcache Enabled',
-                (bool)ini_get('opcache.enable'),
-                criticalWhen: false
-            ),
+            // Both are the CLI/cron process's own settings, which routinely differ from FPM's
+            // (opcache.enable_cli is usually off), so neither is coloured as a problem.
+            'memory_limit' => $this->field->varchar('Memory Limit (CLI)', (string)ini_get('memory_limit')),
+            'opcache_enabled' => $this->field->bool('OPcache Enabled (CLI)', (bool)ini_get('opcache.enable')),
         ];
 
         return [

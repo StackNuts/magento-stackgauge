@@ -44,6 +44,11 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
     private const BACKLOG_CRITICAL_THRESHOLD = 1000;
 
     /**
+     * Upper bound on the distinct-entity count read per indexer; far above the critical band.
+     */
+    private const BACKLOG_COUNT_CAP = 100000;
+
+    /**
      * Mirrors the admin grid's own "Status" column labels.
      *
      * The 'suspended' key is a literal string, not StateInterface::STATUS_SUSPENDED - that
@@ -123,7 +128,7 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
 
         foreach ($this->indexerCollectionFactory->create()->getItems() as $indexer) {
             $scheduled = $indexer->isScheduled();
-            $schedule = $scheduled ? $this->scheduleStatus($indexer) : ['label' => '', 'count' => 0];
+            $schedule = $scheduled ? $this->scheduleStatus($indexer) : ['label' => '', 'count' => 0, 'unavailable' => false];
             $maxBacklog = max($maxBacklog, $schedule['count']);
 
             $indexers[] = $this->field->array((string)$indexer->getId(), [
@@ -139,7 +144,9 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
                 'schedule_status' => $this->field->varchar(
                     'Schedule Status',
                     $schedule['label'],
-                    severity: $scheduled ? $this->backlogSeverity($schedule['count']) : null
+                    severity: $scheduled
+                        ? ($schedule['unavailable'] ? Field::SEVERITY_WARNING : $this->backlogSeverity($schedule['count']))
+                        : null
                 ),
                 'updated_at' => $this->field->datetime('Updated At', (string)$indexer->getLatestUpdated()),
             ]);
@@ -185,13 +192,17 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
     }
 
     /**
-     * "<idle|working|suspended> (<n> in backlog)". Uses a COUNT(DISTINCT) query rather than
-     * loading every pending entity id into PHP, since this runs per indexer on every report.
-     * Swallows failures (e.g. a custom indexer whose changelog table doesn't exist) so one
-     * indexer's failure doesn't blank out the others.
+     * "<idle|working|suspended> (<n> in backlog)". Counts distinct changed entity ids in the
+     * pending version range, capped at BACKLOG_COUNT_CAP via a LIMIT inside the DISTINCT
+     * subselect so a mass import can't build a backlog-sized temp table every hour per indexer.
+     * A capped count is shown as "100000+" and reported as the cap.
+     *
+     * One indexer failing (e.g. a custom indexer whose changelog table doesn't exist) must not
+     * blank out the others, so the failure is caught here - but surfaced as an "Unavailable"
+     * label with a warning severity rather than a healthy-looking 0 backlog.
      *
      * @param IndexerInterface $indexer
-     * @return array{label: string, count: int}
+     * @return array{label: string, count: int, unavailable: bool}
      */
     private function scheduleStatus(IndexerInterface $indexer): array
     {
@@ -202,16 +213,26 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
 
             $connection = $this->resourceConnection->getConnection();
             $table = $this->resourceConnection->getTableName($changelog->getName());
+            $distinct = $connection->select()
+                ->distinct()
+                ->from($table, [$changelog->getColumnName()])
+                ->where('version_id > ?', $state->getVersionId())
+                ->where('version_id <= ?', $changelog->getVersion())
+                ->limit(self::BACKLOG_COUNT_CAP + 1);
             $backlog = (int)$connection->fetchOne(
-                $connection->select()
-                    ->from($table, ['cnt' => new Expression('COUNT(DISTINCT entity_id)')])
-                    ->where('version_id > ?', $state->getVersionId())
-                    ->where('version_id <= ?', $changelog->getVersion())
+                $connection->select()->from(['t' => $distinct], ['cnt' => new Expression('COUNT(*)')])
             );
 
-            return ['label' => sprintf('%s (%d in backlog)', $state->getStatus(), $backlog), 'count' => $backlog];
+            $capped = $backlog > self::BACKLOG_COUNT_CAP;
+            $backlog = min($backlog, self::BACKLOG_COUNT_CAP);
+
+            return [
+                'label' => sprintf('%s (%d%s in backlog)', $state->getStatus(), $backlog, $capped ? '+' : ''),
+                'count' => $backlog,
+                'unavailable' => false,
+            ];
         } catch (Throwable) {
-            return ['label' => '', 'count' => 0];
+            return ['label' => 'Unavailable (backlog could not be read)', 'count' => 0, 'unavailable' => true];
         }
     }
 

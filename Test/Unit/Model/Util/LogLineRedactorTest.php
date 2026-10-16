@@ -61,4 +61,24 @@ class LogLineRedactorTest extends TestCase
 
         $this->assertSame($line, $this->redact($line));
     }
+
+    public function testIpv4AddressesAreMasked(): void
+    {
+        $this->assertSame('login from [ip] failed', $this->redact('login from 203.0.113.42 failed'));
+    }
+
+    public function testIpv6AddressesAreMaskedButClockTimesAndStaticCallsAreNot(): void
+    {
+        $this->assertSame('from [ip] ok', $this->redact('from 2001:db8:85a3::8a2e:370:7334 ok'));
+        $this->assertSame('from [ip] ok', $this->redact('from ::1 ok'));
+        $this->assertSame('at 12:30:45 Foo\\Bar::baz()', $this->redact('at 12:30:45 Foo\\Bar::baz()'));
+    }
+
+    public function testDuplicateEntryValuesAreMasked(): void
+    {
+        $this->assertSame(
+            "SQLSTATE[23000]: Duplicate entry '[redacted]' for key 'CUSTOMER_ENTITY_EMAIL'",
+            $this->redact("SQLSTATE[23000]: Duplicate entry 'jane doe@x' for key 'CUSTOMER_ENTITY_EMAIL'")
+        );
+    }
 }

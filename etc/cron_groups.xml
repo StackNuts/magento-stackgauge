@@ -6,7 +6,8 @@
             ahead_for=10 (5x the 5-minute heartbeat's own period, comfortably more than
             generate_every) guarantees every schedule-generation run overlaps the previous
             one's window - a short ahead_for window can miss the hourly send_report job
-            entirely on real system cron, which isn't aligned to the hour boundary.
+            entirely on real system cron, which isn't aligned to the hour boundary. The send_report
+            job runs every 20 minutes (three slots an hour), not hourly.
         -->
         <schedule_generate_every>5</schedule_generate_every>
         <schedule_ahead_for>10</schedule_ahead_for>
@@ -20,6 +21,10 @@
         -->
         <history_success_lifetime>180</history_success_lifetime>
         <history_failure_lifetime>600</history_failure_lifetime>
-        <use_separate_process>0</use_separate_process>
+        <!--
+            Own process: collection plus network time (up to 10s per POST) must not delay the
+            default/index groups sharing one cron:run, or share its memory.
+        -->
+        <use_separate_process>1</use_separate_process>
     </group>
 </config>

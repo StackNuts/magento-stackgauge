@@ -3,41 +3,49 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
-use PHPUnit\Framework\TestCase;
-use Magento\Payment\Model\Config as PaymentConfig;
 use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Api\Data\StoreInterface;
+use Magento\Store\Model\StoreManagerInterface;
+use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\PaymentMethodsReporter;
 
 class PaymentMethodsReporterTest extends TestCase
 {
-    public function testGetStatusReturnsMethods(): void
+    private function store(int $id, string $code): StoreInterface
     {
-        $method = new class {
-            public function getTitle()
-            {
-                return 'Test Method';
-            }
-        };
+        $store = $this->createMock(StoreInterface::class);
+        $store->method('getId')->willReturn($id);
+        $store->method('getCode')->willReturn($code);
 
-        $paymentConfig = $this->createMock(PaymentConfig::class);
-        $paymentConfig->method('getActiveMethods')->willReturn(['test' => $method]);
+        return $store;
+    }
+
+    public function testListsMethodsActiveInAnyStoreViewWithThoseStoreViews(): void
+    {
+        $storeManager = $this->createMock(StoreManagerInterface::class);
+        $storeManager->method('getStores')->willReturn([$this->store(1, 'default'), $this->store(2, 'uk')]);
 
         $scopeConfig = $this->createMock(ScopeConfigInterface::class);
-        $scopeConfig->method('getValue')->willReturnMap([
-            ['payment/test/title', null, null, 'Test Method'],
-            ['payment/test/active', null, null, '1'],
-        ]);
+        $scopeConfig->method('getValue')->willReturnCallback(
+            static fn (string $path, $scope = null, $code = null) => match ($path) {
+                'payment' => ['checkmo' => ['model' => 'X'], 'ukonly' => ['model' => 'Y'], 'off' => ['model' => 'Z'], 'group' => ['title' => 'x']],
+                'payment/checkmo/active' => 1,
+                'payment/ukonly/active' => $code === 2 ? 1 : 0,
+                'payment/checkmo/title' => 'Check / Money order',
+                'payment/ukonly/title' => 'UK Only',
+                default => 0,
+            }
+        );
 
-        $reporter = new PaymentMethodsReporter($paymentConfig, $scopeConfig, new Field(), new Section());
-        $status = $reporter->getStatus();
-
-        $this->assertArrayHasKey('payments', $status);
-
+        $status = (new PaymentMethodsReporter($storeManager, $scopeConfig, new Field(), new Section()))->getStatus();
         $rows = $status['payments']->getRows();
-        $fields = $rows[0]->getValue();
-        $this->assertArrayNotHasKey('name', $fields);
-        $this->assertSame('Test Method', $fields['title']->getValue());
+
+        $this->assertCount(2, $rows);
+        $this->assertSame('Check / Money order', $rows[0]->getValue()['title']->getValue());
+        $this->assertSame('default, uk', $rows[0]->getValue()['stores']->getValue());
+        $this->assertSame('uk', $rows[1]->getValue()['stores']->getValue());
+        $this->assertSame('ukonly', $rows[1]->getLabel());
     }
 }

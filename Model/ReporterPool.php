@@ -16,6 +16,7 @@ use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\SectionInterface;
+use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 use Throwable;
 
 /**
@@ -28,15 +29,31 @@ use Throwable;
 class ReporterPool
 {
     /**
+     * Longest reporter error message sent to the dashboard (the full text stays in the local log).
+     */
+    private const ERROR_MESSAGE_MAX_LENGTH = 300;
+
+    /**
+     * Encoding used wherever a reporter's output is round-tripped: invalid UTF-8 is substituted
+     * (Transport does the same on the wire) and floats keep their ".0".
+     */
+    private const JSON_FLAGS = JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PRESERVE_ZERO_FRACTION;
+
+    private LogLineRedactor $redactor;
+
+    /**
      * @param ReporterInterface[] $reporters
      * @param Config $config
      * @param LoggerInterface $logger
+     * @param LogLineRedactor|null $redactor
      */
     public function __construct(
         private readonly array $reporters,
         private readonly Config $config,
-        private readonly LoggerInterface $logger
+        private readonly LoggerInterface $logger,
+        ?LogLineRedactor $redactor = null
     ) {
+        $this->redactor = $redactor ?? new LogLineRedactor();
     }
 
     /**
@@ -139,7 +156,7 @@ class ReporterPool
             }
         };
 
-        $sections = json_decode((string)json_encode($sections), true);
+        $sections = json_decode(json_encode($sections, self::JSON_FLAGS), true, 512, JSON_THROW_ON_ERROR);
         foreach ($sections as &$section) {
             foreach ($section['fields'] ?? [] as $key => $field) {
                 $stamp($section['fields'][$key]);
@@ -168,6 +185,8 @@ class ReporterPool
      */
     private function collectOne(ReporterInterface $reporter): array
     {
+        $startedAt = hrtime(true);
+
         try {
             $sections = $reporter->getStatus();
 
@@ -209,6 +228,12 @@ class ReporterPool
             // carries its own key (see SectionInterface::getKey()).
             $result['sections'] = $this->withMetricUnits($reporter, array_values($sections));
 
+            // Prove this block encodes on its own, so a value json_encode rejects (NAN, INF,
+            // too deep) turns only this reporter into an error instead of failing the send.
+            json_encode($result, self::JSON_FLAGS);
+
+            $result['duration_ms'] = $this->elapsedMs($startedAt);
+
             return $result;
         } catch (Throwable $e) {
             $this->logger->warning(sprintf(
@@ -217,7 +242,27 @@ class ReporterPool
                 $e->getMessage()
             ), ['exception' => $e]);
 
-            return ['error' => $e->getMessage()];
+            // Exception messages can carry SQL, values and paths (a PDO duplicate-entry error
+            // includes the customer's email), so only a redacted, truncated copy leaves the
+            // store; the full message stays in the local log above.
+            return [
+                'error' => mb_substr(
+                    $this->redactor->redact($e->getMessage()),
+                    0,
+                    self::ERROR_MESSAGE_MAX_LENGTH
+                ),
+                'duration_ms' => $this->elapsedMs($startedAt),
+            ];
         }
+    }
+
+    /**
+     * Whole milliseconds since an hrtime(true) reading.
+     *
+     * @param int|float $startedAt
+     */
+    private function elapsedMs(int|float $startedAt): int
+    {
+        return (int)round((hrtime(true) - $startedAt) / 1e6);
     }
 }

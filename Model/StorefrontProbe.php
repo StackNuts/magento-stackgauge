@@ -85,10 +85,12 @@ class StorefrontProbe
      *
      * @param ScopeConfigInterface $scopeConfig
      * @param CurlFactory $curlFactory
+     * @param PayloadEnvelope $payloadEnvelope Source of the module version for the User-Agent.
      */
     public function __construct(
         private readonly ScopeConfigInterface $scopeConfig,
-        private readonly CurlFactory $curlFactory
+        private readonly CurlFactory $curlFactory,
+        private readonly PayloadEnvelope $payloadEnvelope
     ) {
     }
 
@@ -193,9 +195,21 @@ class StorefrontProbe
         $curl->setOptions([
             CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
             CURLOPT_TIMEOUT => self::TOTAL_TIMEOUT_SECONDS,
+            CURLOPT_USERAGENT => $this->userAgent(),
         ]);
 
         return $curl;
+    }
+
+    /**
+     * "StackGauge/<module version>" so the store owner can recognise (and allow-list) the probe
+     * in access logs and WAF rules. The version is read the way PayloadEnvelope reads it.
+     */
+    private function userAgent(): string
+    {
+        $version = $this->payloadEnvelope->create('probe', '1')['module_version'] ?? null;
+
+        return 'StackGauge/' . (is_string($version) && $version !== '' ? $version : 'unknown');
     }
 
     /**

@@ -1,59 +1,92 @@
 <?php
+/**
+ * Copyright © StackNuts. All rights reserved.
+ * See LICENSE for license details.
+ */
+
 declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
-use PHPUnit\Framework\TestCase;
-use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
-use Magento\Catalog\Model\ResourceModel\Product\Collection as ProductCollection;
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
-use Magento\Framework\DB\Select;
+use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\InventoryReporter;
+use StackNuts\StackGauge\Model\Util\EnabledProductSql;
 
 class InventoryReporterTest extends TestCase
 {
-    public function testGetStatusReturnsCounts(): void
+    /**
+     * @param list<string> $capturedSql receives the queries the reporter ran
+     */
+    private function reporter(array &$capturedSql, bool $manageStockDefault = true): InventoryReporter
     {
-        $colTotal = $this->createMock(ProductCollection::class);
-        $colTotal->method('getSize')->willReturn(10);
-
-        $factory = $this->createMock(ProductCollectionFactory::class);
-        $factory->method('create')->willReturn($colTotal);
-
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-
         $connection = $this->createMock(AdapterInterface::class);
-        $connection->method('select')->willReturn($select);
-        $connection->method('fetchOne')->willReturn('7');
+        $connection->method('quote')->willReturnCallback(static fn ($v): string => "'" . $v . "'");
+        $connection->method('fetchOne')->willReturnCallback(function (string $sql) use (&$capturedSql) {
+            $capturedSql[] = $sql;
 
-        $resourceConnection = $this->createMock(ResourceConnection::class);
-        $resourceConnection->method('getConnection')->willReturn($connection);
-        $resourceConnection->method('getTableName')->willReturn('cataloginventory_stock_item');
+            return '10';
+        });
+        $connection->method('fetchRow')->willReturnCallback(function (string $sql) use (&$capturedSql) {
+            $capturedSql[] = $sql;
 
-        $reporter = new InventoryReporter($factory, $resourceConnection, new Field(), new Section());
-        $status = $reporter->getStatus();
+            return ['in_stock' => '7', 'out_of_stock' => '2'];
+        });
 
-        $this->assertArrayHasKey('general', $status);
+        $resource = $this->createMock(ResourceConnection::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
+
+        $enabled = $this->createMock(EnabledProductSql::class);
+        $enabled->method('from')->willReturn('FROM catalog_product_entity AS e JOIN status_join AS st ON 1 ');
+
+        $config = $this->createMock(ScopeConfigInterface::class);
+        $config->method('isSetFlag')->with('cataloginventory/item_options/manage_stock')
+            ->willReturn($manageStockDefault);
+
+        return new InventoryReporter($resource, $enabled, $config, new Field(), new Section());
+    }
+
+    public function testGetStatusReturnsCountsFromStockItemRows(): void
+    {
+        $sql = [];
+        $status = $this->reporter($sql)->getStatus();
 
         $fields = $status['general']->getFields();
         $this->assertSame(10, $fields['total_products']->getValue());
         $this->assertSame(7, $fields['in_stock']->getValue());
-        $this->assertSame(3, $fields['out_of_stock']->getValue());
+        $this->assertSame(2, $fields['out_of_stock']->getValue());
         $this->assertSame('inventory.out_of_stock_count', $fields['out_of_stock']->getMetricKey());
+    }
+
+    public function testQueryCountsOnlyEnabledStockManagedSellableTypesOnTheDefaultStock(): void
+    {
+        $sql = [];
+        $this->reporter($sql)->getStatus();
+
+        $query = $sql[1];
+        $this->assertStringContainsString('status_join', $query);
+        $this->assertStringContainsString("e.type_id IN ('simple','virtual','downloadable')", $query);
+        $this->assertStringContainsString('si.stock_id = 1', $query);
+        $this->assertStringContainsString('IF(si.use_config_manage_stock = 1, 1, si.manage_stock) = 1', $query);
+    }
+
+    public function testConfigDefaultOfStockManagementOffIsHonoured(): void
+    {
+        $sql = [];
+        $this->reporter($sql, false)->getStatus();
+
+        $this->assertStringContainsString('IF(si.use_config_manage_stock = 1, 0, si.manage_stock) = 1', $sql[1]);
     }
 
     public function testDeclaresOutOfStockAsATrackableMetric(): void
     {
-        $factory = $this->createMock(ProductCollectionFactory::class);
-        $resourceConnection = $this->createMock(ResourceConnection::class);
-
-        $reporter = new InventoryReporter($factory, $resourceConnection, new Field(), new Section());
-        $metrics = $reporter->getTrackableMetrics();
+        $sql = [];
+        $metrics = $this->reporter($sql)->getTrackableMetrics();
 
         $this->assertCount(1, $metrics);
         $this->assertSame('inventory.out_of_stock_count', $metrics[0]->getMetricKey());

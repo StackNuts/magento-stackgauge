@@ -11,30 +11,37 @@ namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 use StackNuts\StackGauge\Model\LogOffsetStore;
 
 /**
- * In-memory LogOffsetStore double - a real one needs a database, and LogReporterTest needs to
- * simulate multiple runs against the same persisted cursor to exercise incremental reads for
- * real rather than stubbing them out.
+ * In-memory LogOffsetStore double - a real one needs a database. Only the two row-level
+ * persistence methods are replaced, so LogReporterTest exercises the real staging/commit logic.
  */
 class FakeLogOffsetStore extends LogOffsetStore
 {
     /**
-     * @var array<string, array{byte_offset: int, running_count: int}>
+     * @var array<string, array{byte_offset: int, running_count: int, fingerprint: string|null}>
      */
-    private array $state = [];
+    private array $rows = [];
 
     public function __construct()
     {
         // Deliberately skips the parent constructor - no ResourceConnection to give it, and
-        // this fake never needs one.
+        // this fake never needs one. Staging/commit/fingerprint logic is the real parent code.
     }
 
-    public function get(string $filePath): ?array
+    protected function readRow(string $key): ?array
     {
-        return $this->state[$filePath] ?? null;
+        return $this->rows[$key] ?? null;
     }
 
-    public function save(string $filePath, int $byteOffset, int $runningCount): void
+    protected function writeRow(string $key, int $byteOffset, int $runningCount, ?string $fingerprint): void
     {
-        $this->state[$filePath] = ['byte_offset' => $byteOffset, 'running_count' => $runningCount];
+        $this->rows[$key] = ['byte_offset' => $byteOffset, 'running_count' => $runningCount, 'fingerprint' => $fingerprint];
+    }
+
+    /**
+     * Simulates an install upgraded from a version with no fingerprint rows.
+     */
+    public function seedLegacy(string $filePath, int $byteOffset, int $runningCount): void
+    {
+        $this->rows[$filePath] = ['byte_offset' => $byteOffset, 'running_count' => $runningCount, 'fingerprint' => null];
     }
 }

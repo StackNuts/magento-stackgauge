@@ -1,13 +1,17 @@
 <?php
+/**
+ * Copyright © StackNuts. All rights reserved.
+ * See LICENSE for license details.
+ */
+
 declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Adapter\AdapterInterface;
+use Magento\Framework\DB\Select;
 use PHPUnit\Framework\TestCase;
-use Magento\Customer\Model\ResourceModel\Customer\Collection as CustomerCollection;
-use Magento\Customer\Model\ResourceModel\Customer\CollectionFactory as CustomerCollectionFactory;
-use Magento\Sales\Model\ResourceModel\Order\Collection as OrderCollection;
-use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\CustomerSignalsReporter;
@@ -17,30 +21,49 @@ class CustomerSignalsReporterTest extends TestCase
 {
     public function testGetStatusReturnsCounts(): void
     {
-        $custTotal = $this->createMock(CustomerCollection::class);
-        $custTotal->method('getSize')->willReturn(50);
+        $select = $this->createMock(Select::class);
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
 
-        $custNew = $this->createMock(CustomerCollection::class);
-        $custNew->method('addFieldToFilter')->willReturnSelf();
-        $custNew->method('getSize')->willReturn(5);
+        $connection = $this->createMock(AdapterInterface::class);
+        $connection->method('select')->willReturn($select);
+        $connection->method('quote')->willReturnCallback(static fn ($v): string => "'" . $v . "'");
+        // Customers first, then orders.
+        $connection->method('fetchRow')->willReturnOnConsecutiveCalls(
+            ['total' => '50', 'recent' => '5'],
+            ['total' => '20', 'guest' => '8']
+        );
 
-        $orderCol = $this->createMock(OrderCollection::class);
-        $orderCol->method('addFieldToFilter')->willReturnSelf();
-        $orderCol->method('getSize')->willReturn(20);
+        $resource = $this->createMock(ResourceConnection::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
 
-        $orderGuest = $this->createMock(OrderCollection::class);
-        $orderGuest->method('addFieldToFilter')->willReturnSelf();
-        $orderGuest->method('getSize')->willReturn(8);
+        $status = (new CustomerSignalsReporter($resource, new Clock(), new Field(), new Section()))->getStatus();
 
-        $custFactory = $this->createMock(CustomerCollectionFactory::class);
-        $custFactory->method('create')->willReturnOnConsecutiveCalls($custTotal, $custNew);
+        $fields = $status['general']->getFields();
+        $this->assertSame(50, $fields['total_customers']->getValue());
+        $this->assertSame(5, $fields['new_customers_30d']->getValue());
+        $this->assertSame(8, $fields['guest_orders_30d']->getValue());
+        $this->assertSame(12, $fields['logged_in_orders_30d']->getValue());
+    }
 
-        $orderFactory = $this->createMock(OrderCollectionFactory::class);
-        $orderFactory->method('create')->willReturnOnConsecutiveCalls($orderCol, $orderGuest);
+    public function testNoRowsReportZeroes(): void
+    {
+        $select = $this->createMock(Select::class);
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $connection = $this->createMock(AdapterInterface::class);
+        $connection->method('select')->willReturn($select);
+        $connection->method('quote')->willReturnArgument(0);
+        $connection->method('fetchRow')->willReturn(false);
+        $resource = $this->createMock(ResourceConnection::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
 
-        $reporter = new CustomerSignalsReporter($custFactory, $orderFactory, new Clock(), new Field(), new Section());
-        $status = $reporter->getStatus();
+        $fields = (new CustomerSignalsReporter($resource, new Clock(), new Field(), new Section()))
+            ->getStatus()['general']->getFields();
 
-        $this->assertArrayHasKey('general', $status);
+        $this->assertSame(0, $fields['total_customers']->getValue());
+        $this->assertSame(0, $fields['logged_in_orders_30d']->getValue());
     }
 }

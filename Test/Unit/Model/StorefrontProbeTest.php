@@ -12,6 +12,7 @@ use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\HTTP\Client\Curl;
 use Magento\Framework\HTTP\Client\CurlFactory;
 use PHPUnit\Framework\TestCase;
+use StackNuts\StackGauge\Model\PayloadEnvelope;
 use StackNuts\StackGauge\Model\StorefrontProbe;
 
 class StorefrontProbeTest extends TestCase
@@ -22,7 +23,7 @@ class StorefrontProbeTest extends TestCase
         $curl->method('getStatus')->willReturn($status);
         $curl->method('getBody')->willReturn($body);
 
-        return new StorefrontProbe($this->baseUrls($baseUrl), $this->factoryFor($curl));
+        return new StorefrontProbe($this->baseUrls($baseUrl), $this->factoryFor($curl), $this->envelope());
     }
 
     /**
@@ -38,6 +39,14 @@ class StorefrontProbeTest extends TestCase
         ]);
 
         return $scopeConfig;
+    }
+
+    private function envelope(string $version = '0.7.0'): PayloadEnvelope
+    {
+        $envelope = $this->createMock(PayloadEnvelope::class);
+        $envelope->method('create')->willReturn(['module_version' => $version]);
+
+        return $envelope;
     }
 
     /**
@@ -114,7 +123,7 @@ class StorefrontProbeTest extends TestCase
         $curl = $this->createMock(Curl::class);
         $curl->method('get')->willThrowException(new \Exception('Connection timed out'));
 
-        $probe = new StorefrontProbe($this->baseUrls('https://example.test/'), $this->factoryFor($curl));
+        $probe = new StorefrontProbe($this->baseUrls('https://example.test/'), $this->factoryFor($curl), $this->envelope());
         $result = $probe->probe();
 
         $this->assertTrue($result['attempted']);
@@ -143,7 +152,7 @@ class StorefrontProbeTest extends TestCase
             }
         );
 
-        $probe = new StorefrontProbe($this->baseUrls('https://example.test'), $this->factoryFor($curl));
+        $probe = new StorefrontProbe($this->baseUrls('https://example.test'), $this->factoryFor($curl), $this->envelope());
 
         return $probe->checkExposedPaths();
     }
@@ -202,7 +211,8 @@ class StorefrontProbeTest extends TestCase
 
         $probe = new StorefrontProbe(
             $this->baseUrls('https://secure.example.test/', 'http://plain.example.test/'),
-            $this->factoryFor($curl)
+            $this->factoryFor($curl),
+            $this->envelope()
         );
         $probe->probe();
 
@@ -216,15 +226,30 @@ class StorefrontProbeTest extends TestCase
             fn() => $this->createMock(Curl::class)
         );
 
-        $probe = new StorefrontProbe($this->baseUrls('https://example.test/'), $factory);
+        $probe = new StorefrontProbe($this->baseUrls('https://example.test/'), $factory, $this->envelope());
         $probe->probe();
         $probe->checkExposedPaths();
     }
 
     public function testCheckExposedPathsReturnsEmptyWhenNoBaseUrlConfigured(): void
     {
-        $probe = new StorefrontProbe($this->baseUrls(''), $this->createMock(CurlFactory::class));
+        $probe = new StorefrontProbe($this->baseUrls(''), $this->createMock(CurlFactory::class), $this->envelope());
 
         $this->assertSame([], $probe->checkExposedPaths());
+    }
+
+    public function testSendsAVersionedUserAgent(): void
+    {
+        $options = [];
+        $curl = $this->createMock(Curl::class);
+        $curl->method('setOptions')->willReturnCallback(function (array $o) use (&$options): void {
+            $options = $o;
+        });
+        $curl->method('getStatus')->willReturn(200);
+
+        (new StorefrontProbe($this->baseUrls('https://example.test/'), $this->factoryFor($curl), $this->envelope('1.2.3')))
+            ->probe();
+
+        $this->assertSame('StackGauge/1.2.3', $options[CURLOPT_USERAGENT]);
     }
 }

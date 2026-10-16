@@ -8,7 +8,8 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model\Reporter;
 
-use Magento\Cron\Model\ResourceModel\Schedule\CollectionFactory;
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Sql\Expression;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\DeclaresSlotInterface;
@@ -23,28 +24,33 @@ use StackNuts\StackGauge\Model\Reporter\Concern\HealthSectionTrait;
  * "Next due" comes from the earliest still-pending schedule row per job rather than parsing
  * the job's cron expression; if cron has stopped running, that row's scheduled_at is simply
  * in the past, and the dashboard (not this reporter) decides what counts as overdue.
+ *
+ * Reads three small grouped/PK queries instead of a bounded window of rows, so every job is
+ * covered however many rows it has (a fixed 500-row window was mostly pending rows and lost
+ * hourly/daily jobs). Note "last success" can only look back as far as Magento keeps success
+ * rows (cron history cleanup, 60 minutes by default), so a less-frequent job may legitimately
+ * show no last success.
+ *
+ * "Alive" here is derived from when cron last *generated* schedule rows, which only cron
+ * itself does: when this reporter runs from the cron-driven send, alive=false can't normally be
+ * observed (a dead cron doesn't run it) - it shows up from a manual "Send Now". The real
+ * "cron has stopped" signal is the heartbeat (cron_alive on the dashboard's site record), not
+ * this field.
  */
 class CronReporter implements ReporterInterface, DeclaresSectionInterface, DeclaresSubjectInterface, DeclaresSlotInterface
 {
     use HealthSectionTrait;
 
-    private const SCHEMA_VERSION = '1.0';
+    private const SCHEMA_VERSION = '1.1';
     private const ALIVE_THRESHOLD_MINUTES = 30;
 
     /**
-     * Recent window rather than the whole history table - cron_schedule can carry a long
-     * tail of old rows on a busy store, and only recent activity is relevant to "is this
-     * running right now."
-     */
-    private const ROW_LIMIT = 500;
-
-    /**
-     * @param CollectionFactory $scheduleCollectionFactory
+     * @param ResourceConnection $resourceConnection
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
-        private readonly CollectionFactory $scheduleCollectionFactory,
+        private readonly ResourceConnection $resourceConnection,
         private readonly Field $field,
         private readonly Section $section
     ) {
@@ -87,56 +93,51 @@ class CronReporter implements ReporterInterface, DeclaresSectionInterface, Decla
      */
     public function getStatus(): array
     {
-        $collection = $this->scheduleCollectionFactory->create();
-        $collection->setOrder('schedule_id', 'DESC')
-            ->setPageSize(self::ROW_LIMIT);
+        $connection = $this->resourceConnection->getConnection();
+        $table = $this->resourceConnection->getTableName('cron_schedule');
 
-        $mostRecentCreatedAt = null;
-        $lastSuccessByJob = [];
-        $nextScheduledByJob = [];
+        // cron_schedule's timestamps are always UTC strings; the datetime fields below carry
+        // them through unchanged.
+        $lastSuccessByJob = $connection->fetchPairs(
+            $connection->select()
+                ->from($table, ['job_code', 'last_success' => new Expression('MAX(finished_at)')])
+                ->where('status = ?', 'success')
+                ->group('job_code')
+        );
+        $nextScheduledByJob = $connection->fetchPairs(
+            $connection->select()
+                ->from($table, ['job_code', 'next_scheduled' => new Expression('MIN(scheduled_at)')])
+                ->where('status = ?', 'pending')
+                ->group('job_code')
+        );
+        // schedule_id is monotonic, so the newest row by primary key is the most recently generated.
+        $newestCreatedAt = $connection->fetchOne(
+            $connection->select()->from($table, ['created_at'])->order('schedule_id DESC')->limit(1)
+        );
+        $mostRecentCreatedAt = is_scalar($newestCreatedAt) && (string)$newestCreatedAt !== ''
+            ? (string)$newestCreatedAt
+            : null;
 
-        foreach ($collection as $schedule) {
-            $createdAt = $schedule->getCreatedAt();
-            if ($createdAt !== null && ($mostRecentCreatedAt === null || $createdAt > $mostRecentCreatedAt)) {
-                $mostRecentCreatedAt = $createdAt;
-            }
-
-            $jobCode = $schedule->getJobCode();
-
-            if ($schedule->getStatus() === 'success') {
-                $finishedAt = $schedule->getFinishedAt();
-                if ($finishedAt !== null
-                    && (!isset($lastSuccessByJob[$jobCode]) || $finishedAt > $lastSuccessByJob[$jobCode])
-                ) {
-                    $lastSuccessByJob[$jobCode] = $finishedAt;
-                }
-            }
-
-            if ($schedule->getStatus() === 'pending') {
-                $scheduledAt = $schedule->getScheduledAt();
-                if ($scheduledAt !== null
-                    && (!isset($nextScheduledByJob[$jobCode]) || $scheduledAt < $nextScheduledByJob[$jobCode])
-                ) {
-                    $nextScheduledByJob[$jobCode] = $scheduledAt;
-                }
-            }
-        }
-
-        // cron_schedule's timestamps are always UTC; appending " UTC" pins strtotime()'s
-        // interpretation regardless of PHP's ambient default timezone (see Util\Clock).
+        // Appending " UTC" pins strtotime()'s interpretation regardless of PHP's ambient
+        // default timezone (see Util\Clock).
         $alive = $mostRecentCreatedAt !== null
             && (time() - strtotime($mostRecentCreatedAt.' UTC')) <= self::ALIVE_THRESHOLD_MINUTES * 60;
 
         $jobCodes = array_unique(array_merge(array_keys($lastSuccessByJob), array_keys($nextScheduledByJob)));
+        sort($jobCodes);
 
         $jobRows = [];
         foreach ($jobCodes as $jobCode) {
+            $jobCode = (string)$jobCode;
             $jobRows[] = $this->field->array($jobCode, [
                 'job_code' => $this->field->varchar('Job', $jobCode),
-                'last_success_at' => $this->field->varchar('Last Success', $lastSuccessByJob[$jobCode] ?? ''),
-                'next_scheduled_at' => $this->field->varchar(
+                'last_success_at' => $this->field->datetime(
+                    'Last Success',
+                    (string)($lastSuccessByJob[$jobCode] ?? '')
+                ),
+                'next_scheduled_at' => $this->field->datetime(
                     'Next Scheduled',
-                    $nextScheduledByJob[$jobCode] ?? ''
+                    (string)($nextScheduledByJob[$jobCode] ?? '')
                 ),
             ]);
         }
@@ -148,7 +149,7 @@ class CronReporter implements ReporterInterface, DeclaresSectionInterface, Decla
                 'Whether cron looks alive, and when the schedule was last generated.',
                 [
                     'alive' => $this->field->bool('Alive', $alive, criticalWhen: false),
-                    'last_schedule_generated_at' => $this->field->varchar(
+                    'last_schedule_generated_at' => $this->field->datetime(
                         'Last Schedule Generated At',
                         $mostRecentCreatedAt ?? ''
                     ),
@@ -157,7 +158,7 @@ class CronReporter implements ReporterInterface, DeclaresSectionInterface, Decla
             'jobs' => $this->section->table(
                 'jobs',
                 'Jobs',
-                'Per-job last success and next scheduled time.',
+                'Per-job last success and next scheduled time (UTC).',
                 $jobRows,
                 keyName: 'job_code'
             ),

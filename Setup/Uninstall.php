@@ -13,14 +13,15 @@ use Magento\Framework\Setup\SchemaSetupInterface;
 use Magento\Framework\Setup\UninstallInterface;
 
 /**
- * Drops this module's own table on `bin/magento module:uninstall` - nothing else. StackGauge
- * never touches catalog/sales/customer data, so uninstalling it has exactly one piece of state
- * to clean up: the log read offsets in Model\LogOffsetStore.
+ * Cleans up this module's own state on `bin/magento module:uninstall` - nothing else.
+ * StackGauge never touches catalog/sales/customer data, so that is the log read offsets in
+ * Model\LogOffsetStore and its stacknuts_stackgauge/* rows in core_config_data (which include
+ * the encrypted API key and HMAC secret, so they must not outlive the module).
  */
 class Uninstall implements UninstallInterface
 {
     /**
-     * Drops the log-offset table, if it exists.
+     * Drops the log-offset table, if it exists, and deletes every stacknuts_stackgauge/* config row.
      *
      * @param SchemaSetupInterface $setup
      * @param ModuleContextInterface $context
@@ -35,6 +36,9 @@ class Uninstall implements UninstallInterface
         if ($connection->isTableExists($table)) {
             $connection->dropTable($table);
         }
+
+        $configTable = $setup->getTable('core_config_data');
+        $connection->delete($configTable, ['path LIKE ?' => 'stacknuts_stackgauge/%']);
 
         $setup->endSetup();
     }

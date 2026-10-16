@@ -190,4 +190,27 @@ class MetricCatalogPoolTest extends TestCase
 
         $this->assertSame([], $pool->collect());
     }
+
+    public function testADuplicateMetricKeyIsWarnedAbout(): void
+    {
+        $definition = fn (string $label): MetricDefinition => new MetricDefinition(
+            'dup.key',
+            $label,
+            MetricDefinition::AGGREGATION_LATEST,
+            MetricDefinition::OPERATOR_GT,
+            1,
+            60
+        );
+        $reporterPool = $this->createStub(ReporterPool::class);
+        $reporterPool->method('getReporters')->willReturn([
+            $this->reporterWithMetrics('a', [$definition('A')]),
+            $this->reporterWithMetrics('b', [$definition('B')]),
+        ]);
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')->with($this->stringContains('duplicate metric_key "dup.key"'));
+
+        $result = (new MetricCatalogPool($reporterPool, $logger))->collect();
+
+        $this->assertCount(1, $result);
+    }
 }

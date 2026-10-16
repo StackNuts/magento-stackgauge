@@ -21,15 +21,26 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Api\Unit;
 use StackNuts\StackGauge\Model\Reporter\Concern\CommerceSectionTrait;
+use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\Util\Clock;
 use Magento\Framework\DB\Sql\Expression;
 
 /**
- * Lifetime order/quote counts, a recent hourly count/revenue breakdown, order rate compared
- * with a same-weekday-and-hour baseline, and stuck pending_payment orders. Lifetime counts
- * are reported as ever-increasing counters and alerted on via a rolling AGGREGATION_DELTA
- * window, rather than a "since midnight" reset, which would need store-timezone handling and
- * produce false positives every night just after midnight. The hourly breakdown is a separate
+ * Order/quote growth counters, a recent hourly count/revenue breakdown, order rate compared
+ * with a same-weekday-and-hour baseline, and stuck pending_payment orders. The growth
+ * counters are the highest entity_id on sales_order and quote - O(1) primary-key reads that
+ * never decrease (a COUNT(*) on quote shrinks after the nightly sales_clean_quotes, which
+ * would read as negative growth). They are alerted on via a rolling AGGREGATION_DELTA window,
+ * rather than a "since midnight" reset, which would need store-timezone handling and
+ * produce false positives every night just after midnight. An id high-water mark counts
+ * allocated ids, not rows: a server with auto_increment_increment > 1 (e.g. Galera/replica
+ * pairs, increment 2-3) advances that many ids per new row, and failed inserts burn ids, so
+ * treat the delta as approximate "new orders/baskets". The quote counter includes empty
+ * quotes (anonymous visitors/bots creating a quote), so it is a basket-creation signal.
+ *
+ * Revenue (hourly) excludes canceled orders and is split per base currency, since websites
+ * may use different base currencies and summing them would be meaningless. It can be turned
+ * off entirely with the "Send Revenue Figures" config flag; order counts are always sent. The hourly breakdown is a separate
  * grouped SQL aggregate, so it stays a plain descriptive field rather than a trackable metric.
  */
 class SalesReporter implements ReporterInterface, MetricCatalogInterface, DeclaresSectionInterface, DeclaresSlotInterface
@@ -90,12 +101,14 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
     /**
      * @param ResourceConnection $resourceConnection
      * @param Clock $clock
+     * @param Config $config
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
         private readonly ResourceConnection $resourceConnection,
         private readonly Clock $clock,
+        private readonly Config $config,
         private readonly Field $field,
         private readonly Section $section
     ) {
@@ -142,26 +155,31 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
     public function getStatus(): array
     {
         return [
-            'general' => $this->section->facts('general', 'General', 'Lifetime order/quote counts.', [
-                'orders_lifetime_count' => $this->field->trackableNumber(
-                    'Orders (Lifetime)',
-                    $this->count('sales_order'),
-                    self::METRIC_ORDERS_LIFETIME,
-                    MetricDefinition::AGGREGATION_DELTA
-                ),
-                'quotes_with_items_lifetime_count' => $this->field->trackableNumber(
-                    'Quotes With Items (Lifetime)',
-                    $this->count('quote', 'items_count > 0'),
-                    self::METRIC_QUOTES_WITH_ITEMS_LIFETIME,
-                    MetricDefinition::AGGREGATION_DELTA
-                ),
-            ]),
+            'general' => $this->section->facts(
+                'general',
+                'General',
+                'Highest order and quote ids (a growth counter, see the reporter docblock).',
+                [
+                    'orders_lifetime_count' => $this->field->trackableNumber(
+                        'Orders (Lifetime)',
+                        $this->maxEntityId('sales_order'),
+                        self::METRIC_ORDERS_LIFETIME,
+                        MetricDefinition::AGGREGATION_DELTA
+                    ),
+                    'quotes_with_items_lifetime_count' => $this->field->trackableNumber(
+                        'Quotes With Items (Lifetime)',
+                        $this->maxEntityId('quote'),
+                        self::METRIC_QUOTES_WITH_ITEMS_LIFETIME,
+                        MetricDefinition::AGGREGATION_DELTA
+                    ),
+                ]
+            ),
             'orders_hourly' => $this->section->table(
                 'orders_hourly',
                 'Orders (hourly)',
-                'Hourly order counts and revenue for the recent window.',
+                'Hourly order counts and revenue (per base currency, canceled orders excluded) for the recent window; the last row is the current partial hour.',
                 $this->hourlyBuckets(),
-                keyName: 'hour'
+                keyName: 'row'
             ),
             'baseline' => $this->section->facts(
                 'baseline',
@@ -204,7 +222,7 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
                 5,
                 360,
                 null,
-                description: 'Fewer than {threshold} new orders in the last {window} (currently {value}).',
+                description: 'Fewer than {threshold} new orders in the last {window} (currently {value}; counted as growth of the highest order id).',
                 impact: 'Checkout may be broken, or the store is not getting traffic.'
             ),
             new MetricDefinition(
@@ -215,7 +233,7 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
                 3,
                 360,
                 null,
-                description: 'Fewer than {threshold} new baskets with items in the last {window} (currently {value}).',
+                description: 'Fewer than {threshold} new baskets in the last {window} (currently {value}; counted as growth of the highest quote id).',
                 impact: 'Customers may not be able to add products to the basket.'
             ),
             new MetricDefinition(
@@ -249,30 +267,34 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
     }
 
     /**
+     * Highest entity_id in the table (0 when empty) - a primary-key lookup, never a scan, and
+     * monotonic unlike COUNT(*) on a table that gets purged.
+     *
      * Deliberately does not catch failures here - a query failure should surface as this
      * whole reporter's block becoming {"error": ...} via ReporterPool's own error isolation,
      * not silently report "0" as if that were a real (and highly alertable) order count.
      *
      * @param string $table
-     * @param string|null $where
      */
-    private function count(string $table, ?string $where = null): int
+    private function maxEntityId(string $table): int
     {
         $connection = $this->resourceConnection->getConnection();
         $tableName = $this->resourceConnection->getTableName($table);
 
         $select = $connection->select()
-            ->from($tableName, ['cnt' => new Expression('COUNT(*)')]);
-
-        if ($where !== null) {
-            $select->where($where);
-        }
+            ->from($tableName, ['max_id' => new Expression('MAX(entity_id)')]);
 
         return (int) $connection->fetchOne($select);
     }
 
     /**
-     * Builds one row per hour in the recent window, zero-filled for hours with no orders.
+     * Builds the recent hourly breakdown, zero-filled for hours with no orders. The window
+     * starts on an hour boundary so the first bucket is a full hour; the last bucket is the
+     * current, still-partial hour.
+     *
+     * When revenue is enabled there is one row per (hour, base currency): count is every order
+     * in that hour and currency, revenue excludes canceled orders. When disabled there is one
+     * row per hour with the count only. Zero-filled hours carry an empty currency.
      *
      * @return list<ArrayField>
      */
@@ -280,47 +302,60 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
     {
         $connection = $this->resourceConnection->getConnection();
         $table = $this->resourceConnection->getTableName('sales_order');
+        $withRevenue = $this->config->isSendRevenueEnabled();
 
         $now = $this->clock->now();
-        $windowStart = $now->modify(sprintf('-%d hours', self::HOURLY_WINDOW_HOURS));
+        $rawStart = $now->modify(sprintf('-%d hours', self::HOURLY_WINDOW_HOURS));
+        $windowStart = $rawStart->setTime((int) $rawStart->format('H'), 0, 0);
+
+        $columns = [
+            'hour_bucket' => new Expression("DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00')"),
+            'cnt' => new Expression('COUNT(*)'),
+        ];
+        $groupBy = ['hour_bucket'];
+        if ($withRevenue) {
+            $canceled = $connection->quote(Order::STATE_CANCELED);
+            $columns['currency'] = new Expression('base_currency_code');
+            $columns['revenue'] = new Expression(
+                "SUM(CASE WHEN state <> {$canceled} THEN base_grand_total ELSE 0 END)"
+            );
+            $groupBy[] = 'base_currency_code';
+        }
 
         $select = $connection->select()
-            ->from($table, [
-                'hour_bucket' => new Expression("DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00')"),
-                'cnt' => new Expression('COUNT(*)'),
-                'revenue' => new Expression('SUM(base_grand_total)'),
-            ])
+            ->from($table, $columns)
             ->where('created_at >= ?', $windowStart->format('Y-m-d H:i:s'))
-            ->group('hour_bucket');
+            ->group($groupBy);
 
-        $rows = $connection->fetchAll($select);
+        $found = [];
+        foreach ($connection->fetchAll($select) as $row) {
+            $found[(string) $row['hour_bucket']][] = [
+                'count' => (int) $row['cnt'],
+                'currency' => (string) ($row['currency'] ?? ''),
+                'revenue' => round((float) ($row['revenue'] ?? 0), 2),
+            ];
+        }
 
-        $buckets = [];
+        $result = [];
         $cursor = $windowStart;
         while ($cursor <= $now) {
             $hourKey = $cursor->format('Y-m-d H:00:00');
-            $buckets[$hourKey] = ['hour' => $hourKey, 'count' => 0, 'revenue' => 0.0];
+            $entries = $found[$hourKey] ?? [['count' => 0, 'currency' => '', 'revenue' => 0.0]];
+            foreach ($entries as $entry) {
+                $columnsOut = ['hour' => $this->field->datetime('Hour', $hourKey)];
+                if ($withRevenue) {
+                    $columnsOut['currency'] = $this->field->varchar('Currency', $entry['currency']);
+                }
+                $columnsOut['count'] = $this->field->number('Count', $entry['count']);
+                if ($withRevenue) {
+                    $columnsOut['revenue'] = $this->field->number('Revenue', $entry['revenue']);
+                }
+                $result[] = $this->field->array($hourKey.'|'.$entry['currency'], $columnsOut);
+            }
             $cursor = $cursor->modify('+1 hour');
         }
 
-        foreach ($rows as $row) {
-            $key = (string) $row['hour_bucket'];
-            if (isset($buckets[$key])) {
-                $buckets[$key]['count'] = (int) $row['cnt'];
-                $buckets[$key]['revenue'] = round((float) $row['revenue'], 2);
-            }
-        }
-
-        $rows = [];
-        foreach (array_values($buckets) as $bucket) {
-            $rows[] = $this->field->array($bucket['hour'], [
-                'hour' => $this->field->datetime('Hour', $bucket['hour']),
-                'count' => $this->field->number('Count', $bucket['count']),
-                'revenue' => $this->field->number('Revenue', $bucket['revenue']),
-            ]);
-        }
-
-        return $rows;
+        return $result;
     }
 
     /**

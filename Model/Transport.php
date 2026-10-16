@@ -9,7 +9,6 @@ declare(strict_types=1);
 namespace StackNuts\StackGauge\Model;
 
 use Magento\Framework\HTTP\Client\CurlFactory;
-use Magento\Framework\Serialize\Serializer\Json;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -38,14 +37,12 @@ class Transport
      * @param Config $config
      * @param PayloadSigner $payloadSigner
      * @param CurlFactory $curlFactory
-     * @param Json $json
      * @param LoggerInterface $logger
      */
     public function __construct(
         private readonly Config $config,
         private readonly PayloadSigner $payloadSigner,
         private readonly CurlFactory $curlFactory,
-        private readonly Json $json,
         private readonly LoggerInterface $logger
     ) {
     }
@@ -80,9 +77,25 @@ class Transport
             return false;
         }
 
-        $body = $this->json->serialize($payload);
+        // A string cut mid-character (a log tail, say) must not lose the whole payload: invalid
+        // UTF-8 is substituted with U+FFFD rather than throwing. Any other encoding failure is
+        // caught here too, so a bad payload can never escape into the caller's cron.
+        try {
+            $body = json_encode($payload, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+        } catch (Throwable $e) {
+            $this->logger->warning(sprintf(
+                'StackGauge: cannot send %s - the payload could not be encoded as JSON: %s',
+                $logContext,
+                $e->getMessage()
+            ));
+            return false;
+        }
+
         $headers = [
             'Content-Type' => 'application/json',
+            'User-Agent' => 'StackGauge/' . (is_string($payload['module_version'] ?? null)
+                ? $payload['module_version']
+                : 'unknown'),
             'Authorization' => 'Bearer ' . $apiKey,
             'X-StackGauge-Site-Id' => (string)($payload['site']['identifier'] ?? ''),
         ];
@@ -92,6 +105,12 @@ class Transport
             // Sign the raw, uncompressed body - the dashboard decompresses before verifying,
             // so the signed bytes never depend on gzip's own (non-deterministic) output.
             $headers['X-StackGauge-Signature'] = $this->payloadSigner->sign($body, $hmacSecret);
+        } else {
+            $this->logger->warning(sprintf(
+                'StackGauge: sending %s without an HMAC signature - no HMAC secret is configured, '
+                . 'so the dashboard cannot verify the payload was not tampered with.',
+                $logContext
+            ));
         }
 
         $wireBody = $body;

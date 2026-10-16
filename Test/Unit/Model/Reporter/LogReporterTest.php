@@ -11,6 +11,10 @@ namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadInterface;
+use Magento\Framework\Filesystem\Driver\File as FileDriver;
+use Magento\Framework\Filesystem\File\Read as FileRead;
+use Magento\Framework\Filesystem\File\ReadInterface as FileReadInterface;
+use StackNuts\StackGauge\Test\Unit\RemovesTempDirectories;
 use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
@@ -21,10 +25,27 @@ use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 
 class LogReporterTest extends TestCase
 {
+    use RemovesTempDirectories;
+
     /**
-     * $contentsByFile is captured by reference into the directory mock's callbacks, so a test
-     * can mutate it between two getStatus() calls on the same $reporter to simulate a file
-     * growing (or being rotated/truncated) between runs.
+     * @var string[]
+     */
+    private array $tempDirs = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->tempDirs as $dir) {
+            $this->removeTempDirectory($dir);
+        }
+        $this->tempDirs = [];
+    }
+
+    /**
+     * Builds the reporter against real files in a temp var/log, read through Magento's real
+     * file stream class (a hand-written stream double used to hide a bug in how lines were
+     * read). $contentsByFile is captured by reference and written to disk whenever the
+     * reporter touches a file, so a test can mutate it between two getStatus() calls to
+     * simulate a file growing, being rotated, or disappearing.
      *
      * @param array<string, string> $contentsByFile filename => content, mutable by reference
      * @param array<string, string> $monitoredLogFiles filename => display name
@@ -34,27 +55,44 @@ class LogReporterTest extends TestCase
         array $monitoredLogFiles = [],
         ?LogOffsetStore $offsetStore = null
     ): LogReporter {
+        $root = sys_get_temp_dir() . '/stackgauge_logs_' . bin2hex(random_bytes(6));
+        mkdir($root, 0777, true);
+        $this->tempDirs[] = $root;
+
+        $sync = static function (string $file) use (&$contentsByFile, $root): void {
+            $path = $root . '/' . $file;
+            clearstatcache();
+            if (!isset($contentsByFile[$file])) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+                return;
+            }
+            if (!is_file($path) || file_get_contents($path) !== $contentsByFile[$file]) {
+                file_put_contents($path, $contentsByFile[$file]);
+            }
+        };
+
         $filesystem = $this->createMock(Filesystem::class);
         $logDir = $this->createMock(ReadInterface::class);
         $filesystem->method('getDirectoryRead')->with(DirectoryList::LOG)->willReturn($logDir);
 
         $logDir->method('isExist')->willReturnCallback(
-            function (string $file) use (&$contentsByFile): bool {
-                return isset($contentsByFile[$file]);
+            function (string $file) use ($sync, $root): bool {
+                $sync($file);
+                return is_file($root . '/' . $file);
             }
         );
-        // openFile(), not readFile() - LogReporter streams line-by-line so it never loads a
-        // whole (potentially huge) log file into memory. See FakeLineStream below.
         $logDir->method('openFile')->willReturnCallback(
-            function (string $file) use (&$contentsByFile): FakeLineStream {
-                return new FakeLineStream($contentsByFile[$file] ?? '');
+            function (string $file) use ($sync, $root): FileReadInterface {
+                $sync($file);
+                return new FileRead($root . '/' . $file, new FileDriver());
             }
         );
-        // Used to detect rotation/truncation: a stored offset past the current size means
-        // "start over from byte 0" - see LogReporter::streamNewLines().
         $logDir->method('stat')->willReturnCallback(
-            function (string $file) use (&$contentsByFile): array {
-                return ['size' => strlen($contentsByFile[$file] ?? '')];
+            function (string $file) use ($sync, $root): array {
+                $sync($file);
+                return ['size' => filesize($root . '/' . $file)];
             }
         );
 
@@ -215,8 +253,7 @@ Exception: message one',
     public function testDoesNotLoadTheWholeFileIntoMemoryToTailIt(): void
     {
         // The whole point of streaming: a file far larger than would ever fit comfortably in
-        // memory twice over must still resolve to just the last 50 lines. FakeLineStream
-        // hands back one line at a time, exactly like a real file handle would.
+        // memory twice over must still resolve to just the last 50 lines.
         $lineCount = 200000;
         $content = implode("\n", array_map(fn (int $i) => "line {$i}", range(1, $lineCount)));
 
@@ -246,10 +283,12 @@ Exception: message one',
         $first = $reporter->getStatus();
         $this->assertSame(2, $first['general']->getFields()['system_new_lines']->getValue());
 
+        $offsetStore->commit();
         $unchanged = $reporter->getStatus();
         $this->assertSame(0, $unchanged['general']->getFields()['system_new_lines']->getValue());
         $this->assertSame([], $unchanged['tail_system_log']->getRows());
 
+        $offsetStore->commit();
         $contents['system.log'] .= "line three\n";
         $second = $reporter->getStatus();
 
@@ -275,6 +314,7 @@ Exception: message one',
         $first = $reporter->getStatus();
         $this->assertSame(1, $first['general']->getFields()['exception_count']->getValue());
 
+        $offsetStore->commit();
         $contents['exception.log'] .= "RuntimeException: second\nRuntimeException: third\n";
         $second = $reporter->getStatus();
 
@@ -301,6 +341,7 @@ Exception: message one',
         );
 
         $reporter->getStatus();
+        $offsetStore->commit();
 
         // Rotated: a brand-new, much smaller file - the old stored offset is now well past EOF.
         $contents['system.log'] = "fresh line one\nfresh line two\n";
@@ -312,5 +353,93 @@ Exception: message one',
             $afterRotation['tail_system_log']->getRows()
         );
         $this->assertSame(['fresh line one', 'fresh line two'], $lines);
+    }
+
+    public function testEveryLineOfALargeFileIsCountedNotEach64KbBlock(): void
+    {
+        $lines = implode("\n", array_map(fn (int $i) => "Exception: failure number {$i}", range(1, 5000)));
+        $contents = ['system.log' => $lines . "\n", 'exception.log' => $lines . "\n"];
+        $status = $this->reporter($contents, monitoredLogFiles: ['system.log' => 'System'])->getStatus();
+
+        $this->assertSame(5000, $status['general']->getFields()['system_new_lines']->getValue());
+        $this->assertSame(5000, $status['general']->getFields()['exception_count']->getValue());
+        $rows = $status['tail_system_log']->getRows();
+        $this->assertSame('Exception: failure number 5000', $rows[49]->getValue()['line']->getValue());
+        $this->assertSame('Exception: failure number 4951', $rows[0]->getValue()['line']->getValue());
+    }
+
+    public function testNothingAdvancesUntilTheOffsetsAreCommitted(): void
+    {
+        $offsetStore = new FakeLogOffsetStore();
+        $contents = ['system.log' => "one\ntwo\n"];
+        $reporter = $this->reporter($contents, offsetStore: $offsetStore);
+
+        $this->assertSame(2, $reporter->getStatus()['general']->getFields()['system_new_lines']->getValue());
+        // Preview or failed send: staged state is dropped, the same lines are delivered again.
+        $offsetStore->discard();
+        $this->assertSame(2, $reporter->getStatus()['general']->getFields()['system_new_lines']->getValue());
+        $this->assertNull($offsetStore->get('system.log'));
+
+        $offsetStore->commit();
+        $this->assertSame(0, $reporter->getStatus()['general']->getFields()['system_new_lines']->getValue());
+    }
+
+    public function testRotatedFileThatHasGrownPastTheOldOffsetIsReadFromTheStart(): void
+    {
+        $offsetStore = new FakeLogOffsetStore();
+        $contents = ['system.log' => "old a\nold b\n"];
+        $reporter = $this->reporter($contents, offsetStore: $offsetStore);
+        $reporter->getStatus();
+        $offsetStore->commit();
+
+        // Rotated, and the new file is already bigger than the old offset.
+        $contents['system.log'] = "new 1\nnew 2\nnew 3\nnew 4\nnew 5\n";
+        $status = $reporter->getStatus();
+
+        $this->assertSame(5, $status['general']->getFields()['system_new_lines']->getValue());
+    }
+
+    public function testFirstReadOfAHugeFileIsBoundedToTheLastMegabyteAndDropsThePartialLine(): void
+    {
+        $line = str_repeat('abcdefghi ', 9) . "abcdefgh\n"; // 98 chars + newline
+        $contents = ['big.log' => str_repeat($line, 30000)]; // ~3 MB
+        $status = $this->reporter($contents, monitoredLogFiles: ['big.log' => 'Big'])->getStatus();
+
+        $rows = $status['tail_big_log']->getRows();
+        $this->assertCount(50, $rows);
+        foreach ($rows as $row) {
+            $this->assertSame(98, strlen($row->getValue()['line']->getValue()));
+        }
+    }
+
+    public function testRunningCountDoesNotResetWhenTheExceptionLogDisappears(): void
+    {
+        $offsetStore = new FakeLogOffsetStore();
+        $contents = ['exception.log' => "Exception: one one\nException: two two\n"];
+        $reporter = $this->reporter($contents, offsetStore: $offsetStore);
+        $reporter->getStatus();
+        $offsetStore->commit();
+
+        unset($contents['exception.log']);
+        $gone = $reporter->getStatus();
+        $this->assertSame(2, $gone['general']->getFields()['exception_count']->getValue());
+        $offsetStore->commit();
+
+        $contents['exception.log'] = "Exception: three three\n";
+        $this->assertSame(
+            3,
+            $reporter->getStatus()['general']->getFields()['exception_count']->getValue()
+        );
+    }
+
+    public function testAnOffsetRowFromAnOlderVersionWithoutAFingerprintStillWorks(): void
+    {
+        $offsetStore = new FakeLogOffsetStore();
+        $offsetStore->seedLegacy('system.log', 4, 0);
+        $contents = ['system.log' => "one\ntwo\nthree\n"];
+
+        $status = $this->reporter($contents, offsetStore: $offsetStore)->getStatus();
+
+        $this->assertSame(2, $status['general']->getFields()['system_new_lines']->getValue());
     }
 }

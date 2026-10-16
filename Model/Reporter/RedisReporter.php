@@ -9,13 +9,14 @@ declare(strict_types=1);
 namespace StackNuts\StackGauge\Model\Reporter;
 
 use Credis_Client;
-use Magento\Framework\App\DeploymentConfig;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSubjectInterface;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
+use StackNuts\StackGauge\Model\Redis\RedisInstance;
+use StackNuts\StackGauge\Model\Redis\RedisInstanceResolver;
 use StackNuts\StackGauge\Model\Reporter\Concern\DataSectionTrait;
 use Throwable;
 
@@ -39,12 +40,17 @@ class RedisReporter implements ReporterInterface, DeclaresSectionInterface, Decl
     private const CONNECT_TIMEOUT_SECONDS = 2.0;
 
     /**
-     * @param DeploymentConfig $deploymentConfig
+     * A stalled INFO would otherwise block for default_socket_timeout (60s).
+     */
+    private const READ_TIMEOUT_SECONDS = 3.0;
+
+    /**
+     * @param RedisInstanceResolver $resolver
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
-        private readonly DeploymentConfig $deploymentConfig,
+        private readonly RedisInstanceResolver $resolver,
         private readonly Field $field,
         private readonly Section $section
     ) {
@@ -83,25 +89,14 @@ class RedisReporter implements ReporterInterface, DeclaresSectionInterface, Decl
     }
 
     /**
-     * Reports reachability and version for each Redis-backed cache frontend and the session backend, via Credis_Client.
+     * Reports reachability and version for each distinct Redis/Valkey instance behind the cache frontends and
+     * sessions, via Credis_Client. An instance shared by several roles is checked once.
      */
     public function getStatus(): array
     {
         $backends = [];
-
-        foreach ((array)$this->deploymentConfig->get('cache/frontend', []) as $frontendId => $frontend) {
-            if (($frontend['backend'] ?? null) === 'redis') {
-                $backends[] = $this->checkBackend(
-                    'cache_' . $frontendId,
-                    'Cache Frontend',
-                    (array)($frontend['backend_options'] ?? [])
-                );
-            }
-        }
-
-        $session = (array)$this->deploymentConfig->get('session', []);
-        if (($session['save'] ?? null) === 'redis') {
-            $backends[] = $this->checkBackend('session', 'Session Store', (array)($session['redis'] ?? []));
+        foreach ($this->resolver->resolve() as $instance) {
+            $backends[] = $this->checkBackend($instance);
         }
 
         return [
@@ -110,32 +105,47 @@ class RedisReporter implements ReporterInterface, DeclaresSectionInterface, Decl
     }
 
     /**
-     * Connects to one Redis backend with a short timeout and builds its reachability/version row.
+     * Connects to one Redis instance with short connect and read timeouts and builds its reachability/version row.
      *
-     * @param string $name
-     * @param string $purpose
-     * @param array<string,mixed> $options
+     * @param RedisInstance $instance
      */
-    private function checkBackend(string $name, string $purpose, array $options): ArrayField
+    private function checkBackend(RedisInstance $instance): ArrayField
     {
-        $host = (string)($options['server'] ?? $options['host'] ?? '');
-        $port = (int)($options['port'] ?? 6379);
-        $database = (int)($options['database'] ?? 0);
-        $password = $options['password'] ?? null;
-
-        if ($host === '') {
-            return $this->backendField($name, $purpose, false, null);
-        }
+        $purpose = $this->purpose($instance);
 
         try {
-            $client = new Credis_Client($host, $port, self::CONNECT_TIMEOUT_SECONDS, '', $database, $password ?: null);
+            $client = new Credis_Client(
+                $instance->host,
+                $instance->port,
+                min($instance->timeout, self::CONNECT_TIMEOUT_SECONDS),
+                '',
+                $instance->database,
+                $instance->password,
+                $instance->username
+            );
             $client->setMaxConnectRetries(0);
+            $client->setReadTimeout(self::READ_TIMEOUT_SECONDS);
             $info = $client->info();
 
-            return $this->backendField($name, $purpose, true, $info['redis_version'] ?? null);
+            return $this->backendField($instance->name(), $purpose, true, $info['redis_version'] ?? null);
         } catch (Throwable) {
-            return $this->backendField($name, $purpose, false, null);
+            return $this->backendField($instance->name(), $purpose, false, null);
         }
+    }
+
+    /**
+     * Human-readable purpose of an instance from its roles.
+     *
+     * @param RedisInstance $instance
+     */
+    private function purpose(RedisInstance $instance): string
+    {
+        $labels = [];
+        foreach ($instance->roles as $role) {
+            $labels[] = $role === 'session' ? 'Session Store' : 'Cache Frontend';
+        }
+
+        return implode(' + ', array_unique($labels));
     }
 
     /**

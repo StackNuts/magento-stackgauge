@@ -10,7 +10,6 @@ namespace StackNuts\StackGauge\Model\Reporter;
 
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
-use Magento\Framework\Filesystem\Driver\File;
 use Magento\Framework\Serialize\Serializer\Json;
 use Magento\Framework\Shell;
 use Psr\Log\LoggerInterface;
@@ -23,7 +22,10 @@ use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Api\Section\SectionInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\SecuritySectionTrait;
+use StackNuts\StackGauge\Model\Config;
+use StackNuts\StackGauge\Model\Util\CommandTimeout;
 use StackNuts\StackGauge\Model\Util\ComposerLockReader;
+use StackNuts\StackGauge\Model\Util\JsonFileCache;
 use Throwable;
 
 /**
@@ -52,27 +54,32 @@ class PatchInstallerReporter implements ReporterInterface, DeclaresCadenceInterf
     private const SCHEMA_VERSION = '1.0';
     private const CACHE_TTL_SECONDS = 86400;
     private const CACHE_RELATIVE_PATH = 'stackgauge/patch_installer_cache.json';
+    private const COMMAND_TIMEOUT_SECONDS = 120;
     private const PACKAGE_NAME = 'samjuk/magento-patch-installer';
 
     /**
      * @param ComposerLockReader $composerLockReader
      * @param Filesystem $filesystem
-     * @param File $filesystemDriver
      * @param Shell $shell
      * @param Json $json
      * @param LoggerInterface $logger
      * @param Field $field
      * @param Section $section
+     * @param JsonFileCache $cache
+     * @param CommandTimeout $commandTimeout
+     * @param Config $config
      */
     public function __construct(
         private readonly ComposerLockReader $composerLockReader,
         private readonly Filesystem $filesystem,
-        private readonly File $filesystemDriver,
         private readonly Shell $shell,
         private readonly Json $json,
         private readonly LoggerInterface $logger,
         private readonly Field $field,
-        private readonly Section $section
+        private readonly Section $section,
+        private readonly JsonFileCache $cache,
+        private readonly CommandTimeout $commandTimeout,
+        private readonly Config $config
     ) {
     }
 
@@ -121,15 +128,22 @@ class PatchInstallerReporter implements ReporterInterface, DeclaresCadenceInterf
             return $this->result(false);
         }
 
-        $cached = $this->readCache();
+        $fingerprint = $this->composerLockReader->getMtime();
+        $cached = $this->cache->read(self::CACHE_RELATIVE_PATH, self::CACHE_TTL_SECONDS, $fingerprint);
         if ($cached !== null) {
             return $this->result(true, $cached);
         }
 
         $root = rtrim($this->filesystem->getDirectoryRead(DirectoryList::ROOT)->getAbsolutePath(), '/');
 
+        // Cron often has neither composer on PATH nor a HOME; Composer refuses to run without
+        // one. stdin is closed, stderr dropped (any warning would break JSON parsing), and the
+        // group keeps Shell's appended "2>&1" from re-merging it.
+        $command = '{ cd %s && ' . $this->homeEnvironment() . $this->commandTimeout->prefix(self::COMMAND_TIMEOUT_SECONDS)
+            . '%s magento-patches:status --json --no-interaction --no-ansi < /dev/null 2>/dev/null; }';
+
         try {
-            $output = $this->shell->execute('cd %s && composer %s', [$root, 'magento-patches:status --json']);
+            $output = $this->shell->execute($command, [$root, $this->config->getComposerBinary()]);
         } catch (Throwable $e) {
             $this->logger->warning('StackGauge: composer magento-patches:status execution failed: ' . $e->getMessage());
 
@@ -150,7 +164,7 @@ class PatchInstallerReporter implements ReporterInterface, DeclaresCadenceInterf
             return $this->result(false);
         }
 
-        $this->writeCache($data);
+        $this->cache->write(self::CACHE_RELATIVE_PATH, $data, $fingerprint);
 
         return $this->result(true, $data);
     }
@@ -175,76 +189,18 @@ class PatchInstallerReporter implements ReporterInterface, DeclaresCadenceInterf
     }
 
     /**
-     * Reads a still-fresh cached magento-patches:status result, if one exists.
-     *
-     * Never throws - a missing, corrupt, stale or wrong-shaped cache file is treated the same
-     * as no cache at all, since the caller falls back to a live run either way.
-     *
-     * @return array<string,mixed>|null
+     * An inline "COMPOSER_HOME=... " assignment when neither HOME nor COMPOSER_HOME is set (cron),
+     * pointing at a writable directory under var/; empty otherwise.
      */
-    private function readCache(): ?array
+    private function homeEnvironment(): string
     {
-        try {
-            $path = $this->cachePath();
-
-            if (!$this->filesystemDriver->isExists($path)) {
-                return null;
-            }
-
-            $decoded = $this->json->unserialize($this->filesystemDriver->fileGetContents($path));
-
-            if (!is_array($decoded)
-                || !is_int($decoded['recorded_at'] ?? null)
-                || !is_array($decoded['data'] ?? null)
-            ) {
-                return null;
-            }
-
-            if (time() - $decoded['recorded_at'] >= self::CACHE_TTL_SECONDS) {
-                return null;
-            }
-
-            return $decoded['data'];
-        } catch (Throwable) {
-            return null;
+        if ((string)getenv('HOME') !== '' || (string)getenv('COMPOSER_HOME') !== '') {
+            return '';
         }
-    }
 
-    /**
-     * Best-effort write of a fresh magento-patches:status result to the cache.
-     *
-     * A write failure must not fail this reporter - the next call simply runs the command
-     * live again.
-     *
-     * @param array<string,mixed> $data
-     * @return void
-     */
-    private function writeCache(array $data): void
-    {
-        try {
-            $path = $this->cachePath();
-            $dir = $this->filesystemDriver->getParentDirectory($path);
+        $var = rtrim($this->filesystem->getDirectoryRead(DirectoryList::VAR_DIR)->getAbsolutePath(), '/');
 
-            if (!$this->filesystemDriver->isDirectory($dir)) {
-                $this->filesystemDriver->createDirectory($dir);
-            }
-
-            $this->filesystemDriver->filePutContents(
-                $path,
-                $this->json->serialize(['recorded_at' => time(), 'data' => $data])
-            );
-        } catch (Throwable $e) {
-            $this->logger->warning('StackGauge: could not write patch installer cache: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Absolute path to the cached magento-patches:status result, under var/.
-     */
-    private function cachePath(): string
-    {
-        return rtrim($this->filesystem->getDirectoryRead(DirectoryList::VAR_DIR)->getAbsolutePath(), '/')
-            . '/' . self::CACHE_RELATIVE_PATH;
+        return 'COMPOSER_HOME=' . escapeshellarg($var . '/stackgauge/composer_home') . ' ';
     }
 
     /**

@@ -10,11 +10,13 @@ namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 
 use DateTimeImmutable;
 use DateTimeZone;
-use LogicException;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadInterface;
+use Magento\Framework\Filesystem\Driver\File as FileDriver;
+use Magento\Framework\Filesystem\File\Read as FileRead;
 use Magento\Framework\Filesystem\File\ReadInterface as FileReadInterface;
+use StackNuts\StackGauge\Test\Unit\RemovesTempDirectories;
 use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\ArrayField;
 use StackNuts\StackGauge\Api\Field\Field;
@@ -25,8 +27,25 @@ use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 
 class ReportReporterTest extends TestCase
 {
+    use RemovesTempDirectories;
+
     /**
-     * Builds a ReportReporter against a fake var/report (and var/report/api) directory.
+     * @var string[]
+     */
+    private array $tempDirs = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->tempDirs as $dir) {
+            $this->removeTempDirectory($dir);
+        }
+        $this->tempDirs = [];
+    }
+
+    /**
+     * Builds a ReportReporter against a real temp var/ directory, with var/report (and
+     * var/report/api) files written exactly as Magento writes them: the "php exit" guard
+     * line first, then the JSON. Reading goes through Magento's real file stream class.
      *
      * @param array<string, array{content: string, mtime: int}> $webFiles var/report/<name> => data
      * @param array<string, array{content: string, mtime: int}> $apiFiles var/report/api/<name> => data
@@ -38,59 +57,34 @@ class ReportReporterTest extends TestCase
         ?Clock $clock = null,
         bool $reportDirExists = true
     ): ReportReporter {
-        $byPath = [];
-        foreach ($webFiles as $name => $data) {
-            $byPath['report/' . $name] = $data;
+        $root = sys_get_temp_dir() . '/stackgauge_reports_' . bin2hex(random_bytes(6));
+        $this->tempDirs[] = $root;
+        mkdir($root . '/report/api', 0777, true);
+        if (!$reportDirExists) {
+            rmdir($root . '/report/api');
+            rmdir($root . '/report');
         }
-        foreach ($apiFiles as $name => $data) {
-            $byPath['report/api/' . $name] = $data;
+
+        $guard = '<' . "?php exit; ?>\n";
+        foreach (['report/' => $webFiles, 'report/api/' => $apiFiles] as $prefix => $files) {
+            foreach ($files as $name => $data) {
+                $path = $root . '/' . $prefix . $name;
+                file_put_contents($path, $guard . $data['content']);
+                touch($path, $data['mtime']);
+            }
         }
 
         $filesystem = $this->createMock(Filesystem::class);
         $varDir = $this->createMock(ReadInterface::class);
         $filesystem->method('getDirectoryRead')->with(DirectoryList::VAR_DIR)->willReturn($varDir);
-
         $varDir->method('isExist')->willReturnCallback(
-            static function (string $path) use ($reportDirExists, $apiFiles): bool {
-                return match ($path) {
-                    'report' => $reportDirExists,
-                    'report/api' => $apiFiles !== [],
-                    default => false,
-                };
-            }
+            static fn(string $path): bool => is_dir($root . '/' . $path)
         );
-
-        $varDir->method('read')->willReturnCallback(
-            static function (string $path) use ($webFiles, $apiFiles): array {
-                if ($path === 'report') {
-                    $names = array_map(static fn($n): string => 'report/' . $n, array_keys($webFiles));
-                    if ($apiFiles !== []) {
-                        // The "api" subdirectory itself shows up in a directory listing too -
-                        // listCandidates() must skip it via isFile(), not descend into it here.
-                        $names[] = 'report/api';
-                    }
-
-                    return $names;
-                }
-
-                if ($path === 'report/api') {
-                    return array_map(static fn($n): string => 'report/api/' . $n, array_keys($apiFiles));
-                }
-
-                return [];
-            }
+        $varDir->method('getAbsolutePath')->willReturnCallback(
+            static fn($path = null): string => $root . '/' . $path
         );
-
-        $varDir->method('isFile')->willReturnCallback(
-            static fn(string $path): bool => $path !== 'report/api'
-        );
-
-        $varDir->method('stat')->willReturnCallback(
-            static fn(string $path): array => ['mtime' => $byPath[$path]['mtime'] ?? 0]
-        );
-
         $varDir->method('openFile')->willReturnCallback(
-            fn(string $path): FileReadInterface => $this->headStream($byPath[$path]['content'] ?? '')
+            static fn(string $path): FileReadInterface => new FileRead($root . '/' . $path, new FileDriver())
         );
 
         return new ReportReporter(
@@ -119,69 +113,6 @@ class ReportReporterTest extends TestCase
     private function names(array $rows): array
     {
         return array_map(static fn(ArrayField $row): string => (string)$row->getValue()['name']->getValue(), $rows);
-    }
-
-    /**
-     * Minimal Filesystem\File\ReadInterface double: hands back up to $length bytes from the
-     * start of $content via read(), the only method ReportReporter calls on an open report
-     * file. Every other method intentionally throws, so a future accidental use (e.g.
-     * switching back to a whole-file read) shows up as a test failure rather than silently
-     * working against the fake.
-     */
-    private function headStream(string $content): FileReadInterface
-    {
-        return new class ($content) implements FileReadInterface {
-            public function __construct(private readonly string $content)
-            {
-            }
-
-            public function read($length)
-            {
-                return substr($this->content, 0, $length);
-            }
-
-            public function readAll($flag = null, $context = null)
-            {
-                throw new LogicException(
-                    'FakeHeadStream does not support readAll() - ReportReporter should only read().'
-                );
-            }
-
-            public function readLine($length, $ending = null)
-            {
-                throw new LogicException('FakeHeadStream does not support readLine().');
-            }
-
-            public function readCsv($length = 0, $delimiter = ',', $enclosure = '"', $escape = "\0")
-            {
-                throw new LogicException('FakeHeadStream does not support readCsv().');
-            }
-
-            public function tell()
-            {
-                throw new LogicException('FakeHeadStream does not support tell().');
-            }
-
-            public function seek($length, $whence = SEEK_SET)
-            {
-                throw new LogicException('FakeHeadStream does not support seek().');
-            }
-
-            public function eof()
-            {
-                throw new LogicException('FakeHeadStream does not support eof().');
-            }
-
-            public function close()
-            {
-                return true;
-            }
-
-            public function stat()
-            {
-                throw new LogicException('FakeHeadStream does not support stat().');
-            }
-        };
     }
 
     public function testEmptyWhenReportDirDoesNotExist(): void
@@ -341,12 +272,62 @@ class ReportReporterTest extends TestCase
     {
         $webFiles = [];
         for ($i = 0; $i < 20001; $i++) {
-            $webFiles['f' . $i] = ['content' => '', 'mtime' => $i];
+            $webFiles['f' . $i] = ['content' => '', 'mtime' => 1000000 + $i];
         }
 
         $summary = $this->reporter($webFiles)->getStatus()['summary']->getFields();
 
         $this->assertTrue($summary['cap_hit']->getValue());
+        $this->assertTrue($summary['truncated']->getValue());
         $this->assertSame(20000, $summary['total']->getValue());
+    }
+
+    public function testNotTruncatedForASmallDirectory(): void
+    {
+        $summary = $this->reporter(['a' => ['content' => '{}', 'mtime' => time()]])
+            ->getStatus()['summary']->getFields();
+
+        $this->assertFalse($summary['truncated']->getValue());
+        $this->assertFalse($summary['cap_hit']->getValue());
+    }
+
+    public function testGuardLineIsStrippedSoRealReportFilesParseAsJson(): void
+    {
+        // The helper already prefixes the guard line, exactly like a real var/report file.
+        $content = (string)json_encode([
+            0 => 'Real message',
+            1 => '#0 /var/www/html/vendor/some/path.php(12): Foo->bar() ' . str_repeat('x', 400),
+            'url' => '/checkout/cart',
+        ]);
+
+        $row = $this->reporter(['r1' => ['content' => $content, 'mtime' => time()]])
+            ->getStatus()['recent']->getRows()[0]->getValue();
+
+        $this->assertSame('Real message', $row['message']->getValue());
+        $this->assertSame('/checkout/cart', $row['url_path']->getValue());
+    }
+
+    public function testNewestAndCountsAreRightWhenThereAreMoreFilesThanAreRead(): void
+    {
+        $clock = $this->clockAt('2026-10-16 12:00:00');
+        $ts = $clock->now()->getTimestamp();
+        $content = (string)json_encode([0 => 'Boom', 1 => 't']);
+
+        $files = [];
+        // 150 old reports whose names sort after the new ones (random ids sort arbitrarily).
+        for ($i = 0; $i < 150; $i++) {
+            $files['zz' . $i] = ['content' => $content, 'mtime' => $ts - (40 * 3600) - $i];
+        }
+        $files['aa_new'] = ['content' => $content, 'mtime' => $ts - 30];
+        $files['bb_new'] = ['content' => $content, 'mtime' => $ts - 90];
+
+        $status = $this->reporter($files, [], $clock)->getStatus();
+        $summary = $status['summary']->getFields();
+
+        $this->assertSame(152, $summary['total']->getValue());
+        $this->assertSame(2, $summary['new_last_hour']->getValue());
+        $this->assertSame(2, $summary['new_last_24h']->getValue());
+        $this->assertSame(0, $summary['newest_age_minutes']->getValue());
+        $this->assertSame(['aa_new', 'bb_new'], array_slice($this->names($status['recent']->getRows()), 0, 2));
     }
 }

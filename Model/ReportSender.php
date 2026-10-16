@@ -8,8 +8,10 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model;
 
+use Monolog\Logger as MonologLogger;
 use Psr\Log\LoggerInterface;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
+use StackNuts\StackGauge\Model\System\Config\Source\LogLevel;
 
 /**
  * Orchestrates both the full-collection report and the config-sync send: build the payload,
@@ -25,17 +27,22 @@ class ReportSender
      * @param PayloadBuilder $payloadBuilder
      * @param Transport $transport
      * @param LoggerInterface $logger
+     * @param LogOffsetStore $logOffsetStore
      */
     public function __construct(
         private readonly Config $config,
         private readonly PayloadBuilder $payloadBuilder,
         private readonly Transport $transport,
-        private readonly LoggerInterface $logger
+        private readonly LoggerInterface $logger,
+        private readonly LogOffsetStore $logOffsetStore
     ) {
     }
 
     /**
      * The full-collection report payload for the given cadence tier, without sending it.
+     *
+     * A preview never advances the log read offsets: anything staged by an earlier build is
+     * dropped first, and what this build stages is only committed by a later successful send.
      *
      * @param string $cadence One of Api\DeclaresCadenceInterface::CADENCE_*.
      * @param Slot|null $slot Run within the tier; null collects the whole tier.
@@ -43,6 +50,8 @@ class ReportSender
      */
     public function buildPayload(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): array
     {
+        $this->logOffsetStore->discard();
+
         return $this->payloadBuilder->build($cadence, $slot);
     }
 
@@ -95,9 +104,17 @@ class ReportSender
     public function sendNow(string $cadence = DeclaresCadenceInterface::CADENCE_HOURLY, ?Slot $slot = null): bool
     {
         $payload = $this->buildPayload($cadence, $slot);
-        $this->logger->info("StackGauge: full report ({$cadence}) " . json_encode($payload, JSON_UNESCAPED_SLASHES));
+        $this->logPayload("full report ({$cadence})", $payload);
 
-        return $this->transport->send($payload, "report ({$cadence})");
+        $sent = $this->transport->send($payload, "report ({$cadence})");
+        if ($sent) {
+            // Only now that the dashboard accepted the report do its log lines count as delivered.
+            $this->logOffsetStore->commit();
+        } else {
+            $this->logOffsetStore->discard();
+        }
+
+        return $sent;
     }
 
     /**
@@ -106,8 +123,29 @@ class ReportSender
     public function sendConfigSyncNow(): bool
     {
         $payload = $this->buildConfigSync();
-        $this->logger->info('StackGauge: config sync ' . json_encode($payload, JSON_UNESCAPED_SLASHES));
+        $this->logPayload('config sync', $payload);
 
         return $this->transport->send($payload, 'config sync');
+    }
+
+    /**
+     * Writes the payload to the module log, but only builds the JSON when Info is enabled -
+     * encoding a whole report just to have the logger drop it is wasted work. Invalid UTF-8
+     * is substituted so one bad byte can't turn the logged payload into an empty string.
+     *
+     * @param string $label
+     * @param array<string, mixed> $payload
+     */
+    private function logPayload(string $label, array $payload): void
+    {
+        $level = $this->config->getLogLevel();
+        if ($level === LogLevel::LEVEL_OFF || $level > MonologLogger::INFO) {
+            return;
+        }
+
+        $this->logger->info(
+            "StackGauge: {$label} "
+            . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR)
+        );
     }
 }

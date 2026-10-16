@@ -9,7 +9,10 @@ declare(strict_types=1);
 namespace StackNuts\StackGauge\Model\Reporter;
 
 use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Select;
 use Magento\Framework\DB\Sql\Expression;
+use Magento\Framework\EntityManager\MetadataPool;
+use Magento\SalesRule\Api\Data\RuleInterface;
 use Magento\SalesRule\Model\Rule;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
@@ -21,6 +24,7 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\Concern\CommerceSectionTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
+use StackNuts\StackGauge\Model\Util\Clock;
 
 /**
  * Active cart price rules (what agencies mean by "coupons"), plus a lifetime redemption total
@@ -30,12 +34,14 @@ use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
  * coupon_type alone does not imply a rule has exactly one code - a SPECIFIC-type rule can
  * carry thousands of auto-generated salesrule_coupon rows via the separate
  * use_auto_generation flag, so code counts are aggregated per rule_id rather than assumed to
- * be 1 (see activeRuleRows()).
+ * be 1 (see activeRuleRows()). Only the number of codes is reported, never a code.
  */
 class CouponsReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface
 {
     use DailyCadenceTrait;
     use CommerceSectionTrait;
+
+    private ?string $linkField = null;
 
     private const SCHEMA_VERSION = '1.0';
     private const METRIC_TOTAL_REDEMPTIONS = 'coupons.total_redemptions';
@@ -50,11 +56,15 @@ class CouponsReporter implements ReporterInterface, DeclaresCadenceInterface, Me
      * @param ResourceConnection $resourceConnection
      * @param Field $field
      * @param Section $section
+     * @param MetadataPool $metadataPool
+     * @param Clock $clock
      */
     public function __construct(
         private readonly ResourceConnection $resourceConnection,
         private readonly Field $field,
-        private readonly Section $section
+        private readonly Section $section,
+        private readonly MetadataPool $metadataPool,
+        private readonly Clock $clock
     ) {
     }
 
@@ -112,8 +122,8 @@ class CouponsReporter implements ReporterInterface, DeclaresCadenceInterface, Me
             'active_rules' => $this->section->table(
                 'active_rules',
                 'Active Coupons',
-                'Cart price rules currently marked active, with their fixed code (Specific-Coupon '
-                . 'rules only) and lifetime usage.',
+                'Cart price rules currently marked active and not yet expired, with their coupon '
+                . 'code count and lifetime usage. Codes themselves are never sent.',
                 $this->activeRuleRows(),
                 keyName: 'rule_id'
             ),
@@ -141,9 +151,11 @@ class CouponsReporter implements ReporterInterface, DeclaresCadenceInterface, Me
     }
 
     /**
-     * Summed across every rule regardless of is_active/date range - restricting to the
-     * active subset would make this drop whenever a rule expires or is disabled, which
-     * AGGREGATION_DELTA (max - min over the window) would misread as "no growth".
+     * Summed across every current rule row regardless of is_active/date range - restricting to
+     * the active subset would make this drop whenever a rule expires or is disabled, which
+     * AGGREGATION_DELTA (max - min over the window) would misread as "no growth". On staging
+     * editions only the current row of each rule counts, or every scheduled version would add
+     * its times_used again.
      */
     private function totalRedemptionsAllRules(): int
     {
@@ -151,12 +163,17 @@ class CouponsReporter implements ReporterInterface, DeclaresCadenceInterface, Me
         $table = $this->resourceConnection->getTableName('salesrule');
 
         $select = $connection->select()->from($table, ['total' => new Expression('SUM(times_used)')]);
+        $this->restrictToCurrentRows($select);
 
         return (int) $connection->fetchOne($select);
     }
 
     /**
-     * Builds one row per active cart price rule, with codes aggregated per rule_id (see class docblock).
+     * Builds one row per active, unexpired cart price rule (capped at TableSection's row
+     * limit, plus one so it can flag truncation), with the number of codes per rule.
+     *
+     * Coupon codes and rule descriptions are deliberately not sent: a code is a working
+     * credential and a description is free text an admin may have put anything in.
      *
      * @return list<ArrayField>
      */
@@ -165,59 +182,79 @@ class CouponsReporter implements ReporterInterface, DeclaresCadenceInterface, Me
         $connection = $this->resourceConnection->getConnection();
         $ruleTable = $this->resourceConnection->getTableName('salesrule');
         $couponTable = $this->resourceConnection->getTableName('salesrule_coupon');
-
-        // Aggregated to one row per rule_id before the join - joining salesrule_coupon
-        // directly on rule_id would fan out into one row per code (see class docblock).
-        $couponAgg = $connection->select()
-            ->from($couponTable, [
-                'rule_id',
-                'coupon_count' => new Expression('COUNT(*)'),
-                'code' => new Expression('MIN(code)'),
-            ])
-            ->group('rule_id');
+        $linkField = $this->getLinkField();
 
         $select = $connection->select()
             ->from(['r' => $ruleTable], [
-                'rule_id', 'name', 'description', 'coupon_type', 'times_used', 'from_date', 'to_date',
+                'link_id' => $linkField, 'rule_id', 'name', 'coupon_type', 'times_used', 'from_date', 'to_date',
             ])
-            ->joinLeft(['c' => $couponAgg], 'c.rule_id = r.rule_id', ['coupon_count', 'code'])
             ->where('r.is_active = ?', 1)
-            ->order('r.rule_id ASC');
+            ->where('(r.to_date IS NULL OR r.to_date >= ?)', $this->clock->now()->format('Y-m-d'))
+            ->order('r.rule_id ASC')
+            ->limit(ArrayField::MAX_ITEMS + 1);
+        $this->restrictToCurrentRows($select, 'r.');
 
         $rows = $connection->fetchAll($select);
 
-        return array_map(function (array $row): ArrayField {
+        // Counted only for the rules being reported, COUNT(*) on the rule_id index - never
+        // MIN(code), which forces a full scan of a table that can hold millions of generated codes.
+        $couponCounts = [];
+        if ($rows !== []) {
+            $linkIds = array_map(static fn (array $row): int => (int) $row['link_id'], $rows);
+            $countSelect = $connection->select()
+                ->from($couponTable, ['rule_id', 'coupon_count' => new Expression('COUNT(*)')])
+                ->where('rule_id IN (?)', $linkIds)
+                ->group('rule_id');
+            $couponCounts = $connection->fetchPairs($countSelect);
+        }
+
+        return array_map(function (array $row) use ($couponCounts): ArrayField {
             $couponType = (int) $row['coupon_type'];
-            $couponCount = (int) ($row['coupon_count'] ?? 0);
 
             return $this->field->array((string) $row['name'], [
                 'rule_id' => $this->field->number('Rule ID', (int) $row['rule_id']),
                 'name' => $this->field->varchar('Name', (string) $row['name']),
-                'description' => $this->field->varchar('Description', (string) ($row['description'] ?? '')),
                 'coupon_type' => $this->field->varchar(
                     'Coupon Type',
                     self::COUPON_TYPE_LABELS[$couponType] ?? 'Unknown'
                 ),
-                // Only meaningful as a single "the code" when the rule has exactly one - a
-                // batch of generated codes has no one fixed code to show, just a count.
-                'code' => $this->field->varchar('Code', $couponCount === 1 ? (string) ($row['code'] ?? '') : ''),
-                'coupon_count' => $this->field->number('Coupon Codes', $couponCount),
-                'from_date' => $this->field->datetime('Start Date', $this->toUtcDateTime($row['from_date'])),
-                'to_date' => $this->field->datetime('End Date', $this->toUtcDateTime($row['to_date'])),
+                'coupon_count' => $this->field->number(
+                    'Coupon Codes',
+                    (int) ($couponCounts[$row['link_id']] ?? 0)
+                ),
+                // Plain store-local dates as Magento stores them - they are not instants, so
+                // they are not dressed up as midnight UTC.
+                'from_date' => $this->field->varchar('Start Date', (string) ($row['from_date'] ?? '')),
+                'to_date' => $this->field->varchar('End Date', (string) ($row['to_date'] ?? '')),
                 'times_used' => $this->field->number('Times Used', (int) $row['times_used']),
             ]);
         }, $rows);
     }
 
     /**
-     * Stretches a plain DATE column value to DateTimeField's "Y-m-d H:i:s" shape at midnight UTC.
-     *
-     * Null (to_date only, meaning "never expires") becomes '', DateTimeField's own convention for "never".
-     *
-     * @param string|null $date
+     * The salesrule link field: rule_id on Open Source, row_id on Adobe Commerce staging.
      */
-    private function toUtcDateTime(?string $date): string
+    private function getLinkField(): string
     {
-        return $date ? $date . ' 00:00:00' : '';
+        if ($this->linkField === null) {
+            $this->linkField = (string) $this->metadataPool->getMetadata(RuleInterface::class)->getLinkField();
+        }
+
+        return $this->linkField;
+    }
+
+    /**
+     * Restricts to current rule rows on staging editions; a no-op on Open Source.
+     *
+     * @param Select $select
+     * @param string $alias Table alias prefix including the dot, or '' for none.
+     */
+    private function restrictToCurrentRows(Select $select, string $alias = ''): void
+    {
+        if ($this->getLinkField() === 'rule_id') {
+            return;
+        }
+
+        $select->where($alias . 'created_in <= UNIX_TIMESTAMP() AND ' . $alias . 'updated_in > UNIX_TIMESTAMP()');
     }
 }

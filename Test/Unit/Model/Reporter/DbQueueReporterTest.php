@@ -22,8 +22,7 @@ class DbQueueReporterTest extends TestCase
     {
         $select = $this->createMock(Select::class);
         $select->method('from')->willReturnSelf();
-        $select->method('joinLeft')->willReturnSelf();
-        $select->method('columns')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
         $select->method('group')->willReturnSelf();
         $select->method('order')->willReturnSelf();
 
@@ -42,7 +41,20 @@ class DbQueueReporterTest extends TestCase
         $resource->method('getTableName')->willReturnArgument(0);
         $connection->method('isTableExists')->willReturn($tablesExist);
         $connection->method('select')->willReturn($this->mockSelect());
-        $connection->method('fetchAll')->willReturn($rows);
+
+        // Reporter issues two queries: grouped status counts first, then the queue names.
+        $counts = [];
+        $queues = [];
+        foreach ($rows as $i => $row) {
+            $queues[] = ['id' => (string)($i + 1), 'name' => $row['name']];
+            if ((int)$row['backlog'] > 0) {
+                $counts[] = ['queue_id' => (string)($i + 1), 'status' => '2', 'cnt' => $row['backlog']];
+            }
+            if ((int)$row['errors'] > 0) {
+                $counts[] = ['queue_id' => (string)($i + 1), 'status' => '6', 'cnt' => $row['errors']];
+            }
+        }
+        $connection->method('fetchAll')->willReturnOnConsecutiveCalls($counts, $queues);
 
         return new DbQueueReporter($resource, new Field(), new Section());
     }
@@ -94,6 +106,20 @@ class DbQueueReporterTest extends TestCase
         $this->assertSame('saveConfig', $quiet['name']->getValue());
         $this->assertSame(0, $quiet['backlog']->getValue());
         $this->assertSame(0, $quiet['errors']->getValue());
+    }
+
+    public function testAQueryFailurePropagatesInsteadOfReadingAsZeroBacklog(): void
+    {
+        $resource = $this->createMock(ResourceConnection::class);
+        $connection = $this->createMock(AdapterInterface::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
+        $connection->method('isTableExists')->willReturn(true);
+        $connection->method('select')->willReturn($this->mockSelect());
+        $connection->method('fetchAll')->willThrowException(new \RuntimeException('db down'));
+
+        $this->expectException(\RuntimeException::class);
+        (new DbQueueReporter($resource, new Field(), new Section()))->getStatus();
     }
 
     public function testDeclaresTheDataSection(): void

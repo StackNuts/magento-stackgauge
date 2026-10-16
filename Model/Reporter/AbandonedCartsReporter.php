@@ -1,38 +1,55 @@
 <?php
+/**
+ * Copyright © StackNuts. All rights reserved.
+ * See LICENSE for license details.
+ */
+
 declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model\Reporter;
 
-use Magento\Quote\Model\ResourceModel\Quote\CollectionFactory as QuoteCollectionFactory;
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Sql\Expression;
+use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
+use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
-use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
-use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\CommerceSectionTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
 use StackNuts\StackGauge\Model\Util\Clock;
 
+/**
+ * Active quotes with items that have gone idle, read with one raw aggregate query over
+ * `quote` (a full scan - no quote index leads with is_active or updated_at - but it runs
+ * daily and returns one row).
+ *
+ * "Abandoned" means no activity for 24h. Magento only purges quotes after ~30 days, so the
+ * total of everything idle for 24h+ is a large, always-present backlog; that total is shown
+ * but not alerted on. The tracked metric (`abandoned_carts.count`) is the number of carts that
+ * went idle during the last day (idle for 24-48h): a per-day figure that stays bounded and is
+ * comparable run to run, so a plain threshold works.
+ */
 class AbandonedCartsReporter implements ReporterInterface, DeclaresCadenceInterface, MetricCatalogInterface, DeclaresSectionInterface
 {
     use DailyCadenceTrait;
     use CommerceSectionTrait;
 
-    private const SCHEMA_VERSION = '1.0';
+    private const SCHEMA_VERSION = '1.1';
     private const METRIC_COUNT = 'abandoned_carts.count';
     private const SAMPLE_LIMIT = 5;
     private const HOURS_OLD = 24;
 
     /**
-     * @param QuoteCollectionFactory $quoteCollectionFactory
+     * @param ResourceConnection $resourceConnection
      * @param Clock $clock
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
-        private readonly QuoteCollectionFactory $quoteCollectionFactory,
+        private readonly ResourceConnection $resourceConnection,
         private readonly Clock $clock,
         private readonly Field $field,
         private readonly Section $section
@@ -60,7 +77,7 @@ class AbandonedCartsReporter implements ReporterInterface, DeclaresCadenceInterf
      */
     public function getDescription(): string
     {
-        return 'Counts of carts with items that appear abandoned (no activity in last 24h).';
+        return 'Carts with items that went idle in the last day, plus the total backlog idle for over 24h.';
     }
 
     /**
@@ -72,76 +89,92 @@ class AbandonedCartsReporter implements ReporterInterface, DeclaresCadenceInterf
     }
 
     /**
-     * Reports the count of active quotes with items that haven't been updated in the last
-     * 24h (read via QuoteCollectionFactory), plus a sample of up to five such quote IDs.
+     * Reports how many active carts with items went idle in the last day (the tracked
+     * count), the total idle for 24h+, and up to five of the newest such quote IDs.
      */
     public function getStatus(): array
     {
+        $connection = $this->resourceConnection->getConnection();
+        $table = $this->resourceConnection->getTableName('quote');
+
         $now = $this->clock->now();
-        $threshold = $now->modify(sprintf('-%d hours', self::HOURS_OLD))->format('Y-m-d H:i:s');
+        $idleSince = $now->modify(sprintf('-%d hours', self::HOURS_OLD))->format('Y-m-d H:i:s');
+        $windowStart = $now->modify(sprintf('-%d hours', self::HOURS_OLD * 2))->format('Y-m-d H:i:s');
 
-        $countCollection = $this->quoteCollectionFactory->create();
-        $countCollection->addFieldToFilter('items_count', ['gt' => 0]);
-        $countCollection->addFieldToFilter('updated_at', ['lt' => $threshold]);
-        $countCollection->addFieldToFilter('is_active', ['eq' => 1]);
-        $total = $countCollection->getSize();
+        $totals = (array) $connection->fetchRow(
+            $connection->select()
+                ->from($table, [
+                    'total' => new Expression('COUNT(*)'),
+                    'recent' => new Expression(
+                        'SUM(CASE WHEN updated_at >= ' . $connection->quote($windowStart) . ' THEN 1 ELSE 0 END)'
+                    ),
+                ])
+                ->where('is_active = 1')
+                ->where('items_count > 0')
+                ->where('updated_at < ?', $idleSince)
+        );
 
-        $sampleCollection = $this->quoteCollectionFactory->create();
-        $sampleCollection->addFieldToFilter('items_count', ['gt' => 0]);
-        $sampleCollection->addFieldToFilter('updated_at', ['lt' => $threshold]);
-        $sampleCollection->addFieldToFilter('is_active', ['eq' => 1]);
-        $sampleCollection->setPageSize(self::SAMPLE_LIMIT);
-        $items = $sampleCollection->getItems();
-
-        $sampleIds = [];
-        foreach ($items as $item) {
-            if (method_exists($item, 'getId')) {
-                $sampleIds[] = (string) $item->getId();
-            }
-        }
+        $sampleRows = $connection->fetchAll(
+            $connection->select()
+                ->from($table, ['entity_id', 'updated_at'])
+                ->where('is_active = 1')
+                ->where('items_count > 0')
+                ->where('updated_at < ?', $idleSince)
+                ->where('updated_at >= ?', $windowStart)
+                ->order(['updated_at DESC', 'entity_id DESC'])
+                ->limit(self::SAMPLE_LIMIT)
+        );
 
         $sampleFields = [];
-        foreach ($sampleIds as $id) {
-            $sampleFields[] = $this->field->array('', [
-                'name' => $this->field->varchar('Name', $id),
-                'quote_id' => $this->field->varchar('Quote ID', $id),
+        foreach ($sampleRows as $row) {
+            $quoteId = (string) $row['entity_id'];
+            $sampleFields[] = $this->field->array($quoteId, [
+                'quote_id' => $this->field->varchar('Quote ID', $quoteId),
+                'updated_at' => $this->field->datetime('Last Activity', (string) $row['updated_at']),
             ]);
         }
 
         return [
             'general' => $this->section->facts('general', 'General', '', [
                 'count' => $this->field->trackableNumber(
-                    'Count',
-                    $total,
+                    'Went Idle In Last Day',
+                    (int) ($totals['recent'] ?? 0),
                     self::METRIC_COUNT,
-                    MetricDefinition::AGGREGATION_DELTA
+                    MetricDefinition::AGGREGATION_LATEST
                 ),
+                'total_idle' => $this->field->number('Total Idle Over 24h', (int) ($totals['total'] ?? 0)),
             ]),
-            'samples' => $this->section->table('samples', 'Samples', 'Recently abandoned cart IDs.', $sampleFields),
+            'samples' => $this->section->table(
+                'samples',
+                'Samples',
+                'Most recently abandoned cart IDs.',
+                $sampleFields,
+                keyName: 'quote_id'
+            ),
         ];
     }
 
     /**
-     * Alertable metric for the abandoned-carts reporter: week-over-week growth in the abandoned-cart count.
+     * Alertable metric for the abandoned-carts reporter: carts that went idle in the last day.
      */
     public function getTrackableMetrics(): array
     {
         return [
-            // Alerts on week-over-week growth (DELTA), not the absolute count: every active
-            // store carries a large, constantly-refreshing backlog of carts that count as
-            // "abandoned" after just 24h but aren't cleaned up for 30 days, so the absolute
-            // count is permanently high as normal behaviour. A sudden growth spike is the
-            // actual signal worth paging on. Window is a full week since growth needs several
-            // days of samples to mean anything.
+            // LATEST against a plain threshold, on the per-day "went idle" figure rather than
+            // the total backlog (permanently large: Magento keeps idle quotes ~30 days) or a
+            // DELTA of it (which measures how much a fluctuating number moves, not growth, and
+            // fired constantly on big stores). 1000/day is above normal on a typical agency
+            // client store, so it flags an unusual spike (checkout friction, payment failures);
+            // large stores should raise it from the rule editor.
             new MetricDefinition(
                 self::METRIC_COUNT,
-                'Abandoned Carts: Weekly Growth',
-                MetricDefinition::AGGREGATION_DELTA,
+                'Abandoned Carts: Went Idle In Last Day',
+                MetricDefinition::AGGREGATION_LATEST,
                 MetricDefinition::OPERATOR_GT,
-                50,
-                10080,
+                1000,
+                1440,
                 null,
-                description: 'Abandoned carts grew by {value} in the last {window}, above {threshold}.',
+                description: '{value} carts with items went idle in the last day, above {threshold}.',
                 impact: 'Possible checkout friction or payment problems.'
             ),
         ];

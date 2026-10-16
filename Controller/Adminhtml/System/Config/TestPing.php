@@ -12,19 +12,25 @@ use Magento\Backend\App\Action;
 use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\Json;
 use Magento\Framework\Controller\Result\JsonFactory;
+use Magento\Framework\Lock\LockManagerInterface;
 use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\ReportRunner;
 use StackNuts\StackGauge\Model\HeartbeatSender;
 use Throwable;
 
 /**
- * Verifies the endpoint URL/API key by sending every run the cron jobs send (each hourly and
- * daily slot plus the config sync, via ReportRunner), regardless of the "Enabled" toggle, since
- * an admin testing the connection is likely still mid-setup. Doubles as a manual "sync now".
+ * Verifies the endpoint URL/API key by sending a heartbeat, the config sync and the hourly slot
+ * the clock is in now (via ReportRunner), regardless of the "Enabled" toggle, since an admin
+ * testing the connection is likely still mid-setup. Deliberately not every slot of both tiers
+ * (that was seven POSTs after collecting every reporter, enough to hit gateway timeouts); the
+ * full set is `bin/magento stackgauge:send`. A lock stops a double click or two admins from
+ * running it at once.
  */
 class TestPing extends Action implements HttpPostActionInterface
 {
-    public const ADMIN_RESOURCE = 'Magento_Config::config';
+    public const ADMIN_RESOURCE = 'StackNuts_StackGauge::config';
+    public const LOCK_NAME = 'stacknuts_stackgauge_test_ping';
+    private const LOCK_TIMEOUT_SECONDS = 0;
 
     /**
      * @param Action\Context $context
@@ -32,19 +38,21 @@ class TestPing extends Action implements HttpPostActionInterface
      * @param Config $config
      * @param ReportRunner $reportRunner
      * @param HeartbeatSender $heartbeatSender
+     * @param LockManagerInterface $lockManager
      */
     public function __construct(
         Action\Context $context,
         private readonly JsonFactory $jsonFactory,
         private readonly Config $config,
         private readonly ReportRunner $reportRunner,
-        private readonly HeartbeatSender $heartbeatSender
+        private readonly HeartbeatSender $heartbeatSender,
+        private readonly LockManagerInterface $lockManager
     ) {
         parent::__construct($context);
     }
 
     /**
-     * Sends a real full report of every cadence tier plus a heartbeat and config-sync.
+     * Sends a heartbeat, the config sync and the current hourly slot.
      *
      * Reports whether the dashboard accepted it.
      */
@@ -59,6 +67,27 @@ class TestPing extends Action implements HttpPostActionInterface
             ]);
         }
 
+        if (!$this->lockManager->lock(self::LOCK_NAME, self::LOCK_TIMEOUT_SECONDS)) {
+            return $result->setData([
+                'success' => false,
+                'message' => __('A test is already running. Wait for it to finish, then try again.')->render(),
+            ]);
+        }
+
+        try {
+            return $this->runTest($result);
+        } finally {
+            $this->lockManager->unlock(self::LOCK_NAME);
+        }
+    }
+
+    /**
+     * Does the sends once the lock is held.
+     *
+     * @param Json $result
+     */
+    private function runTest(Json $result): Json
+    {
         try {
             $this->heartbeatSender->sendNow();
         // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
@@ -69,7 +98,11 @@ class TestPing extends Action implements HttpPostActionInterface
         $sent = 0;
         $failed = [];
         try {
-            foreach ($this->reportRunner->all() as $run) {
+            $runs = [
+                ...$this->reportRunner->resolve(ReportRunner::TARGET_CURRENT),
+                ...$this->reportRunner->resolve('config'),
+            ];
+            foreach ($runs as $run) {
                 if ($this->reportRunner->send($run, true)) {
                     $sent++;
                 } else {
@@ -86,7 +119,7 @@ class TestPing extends Action implements HttpPostActionInterface
         if ($failed === []) {
             return $result->setData([
                 'success' => true,
-                'message' => __('Success! %1 reports (every hourly and daily slot, plus the config sync) were sent.', $sent)
+                'message' => __('Success! A heartbeat, the config sync and the current hourly report (%1 reports) were sent.', $sent)
                     ->render(),
             ]);
         }

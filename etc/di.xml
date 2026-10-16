@@ -129,6 +129,16 @@
         <plugin name="stacknuts_stackgauge_maintenance_mode_heartbeat" type="StackNuts\StackGauge\Plugin\App\MaintenanceModePlugin" />
     </type>
 
+    <!-- Magento instantiates every console command on every bin/magento call (cron:run included).
+         Proxies keep the reporter graph behind ReportRunner/HeartbeatSender from being built
+         until stackgauge:send actually runs. -->
+    <type name="StackNuts\StackGauge\Console\Command\SendReportCommand">
+        <arguments>
+            <argument name="reportRunner" xsi:type="object">StackNuts\StackGauge\Model\ReportRunner\Proxy</argument>
+            <argument name="heartbeatSender" xsi:type="object">StackNuts\StackGauge\Model\HeartbeatSender\Proxy</argument>
+        </arguments>
+    </type>
+
     <type name="Magento\Framework\Console\CommandList">
         <arguments>
             <argument name="commands" xsi:type="array">

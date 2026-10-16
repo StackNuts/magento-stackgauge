@@ -1,4 +1,9 @@
 <?php
+/**
+ * Copyright © StackNuts. All rights reserved.
+ * See LICENSE for license details.
+ */
+
 declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
@@ -53,6 +58,19 @@ class DbSchemaReporterTest extends TestCase
 
         $this->assertSame(1, $status['general']->getFields()['drifted_count']->getValue());
         $this->assertSame(1, $status['general']->getFields()['in_sync_count']->getValue());
+    }
+
+    public function testAModuleWithNoDbRowIsDriftedAsNotInstalled(): void
+    {
+        $status = $this->reporter(
+            ['Vendor_Fresh' => ['setup_version' => '1.0.0'], 'Vendor_Declarative' => []],
+            []
+        )->getStatus();
+
+        $this->assertSame(1, $status['general']->getFields()['drifted_count']->getValue());
+        $row = $status['drifted']->getRows()[0]->getValue();
+        $this->assertSame('Vendor_Fresh', $row['name']->getValue());
+        $this->assertSame('not installed', $row['db_version']->getValue());
     }
 
     public function testDeclaresTheDriftedCountAsATrackableMetric(): void

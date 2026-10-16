@@ -11,6 +11,7 @@ namespace StackNuts\StackGauge\Model\Reporter;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadInterface;
+use Magento\Framework\Filesystem\File\ReadInterface as FileReadInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSlotInterface;
 use StackNuts\StackGauge\Api\Field\Field;
@@ -32,9 +33,12 @@ use Throwable;
  * > Agent > "Monitored Log Files" (see Config::getMonitoredLogFiles()).
  *
  * Every run reads only the bytes appended to a file since this reporter last looked at it,
- * via a byte offset persisted per file name in LogOffsetStore - the first time a file is seen
- * (or after it's been rotated/truncated, detected by the stored offset exceeding the file's
- * current size) it's read from byte 0, exactly like every run used to behave. A real
+ * via a byte offset kept per file name in LogOffsetStore. The offsets are only staged here;
+ * ReportSender commits them after the dashboard accepted the report, so a preview or a failed
+ * send never swallows lines. A file never seen before is read from at most its last
+ * FIRST_READ_MAX_BYTES; a rotated or truncated file (offset past the end, or the fingerprint
+ * of its first bytes no longer matching the stored one) is read again from the start, bounded
+ * the same way. A real
  * exception.log on a long-running store can reach hundreds of MB; rereading it whole on every
  * run reliably exhausted PHP-FPM's memory_limit (CLI/cron kept working throughout, which is
  * why this only ever surfaced via the admin "Send Now" button) and, even memory-safe, wasted
@@ -71,6 +75,16 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
      * for one readLine() call without truncating anything realistic.
      */
     private const MAX_LINE_LENGTH = 65536;
+
+    /**
+     * The most a file seen for the first time (or after rotation) is read back: the last 1 MB.
+     */
+    private const FIRST_READ_MAX_BYTES = 1048576;
+
+    /**
+     * How many leading bytes are hashed to recognise the same file across runs.
+     */
+    private const FINGERPRINT_BYTES = 512;
 
     /**
      * @param Filesystem $filesystem
@@ -159,8 +173,7 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
 
         foreach ($this->config->getMonitoredLogFiles() as $file => $name) {
             $key = $this->tailSectionKey($file);
-            // system.log and exception.log were already streamed above (each exactly once, to
-            // avoid reading past its own just-saved offset) - reuse those tails rather than
+            // system.log and exception.log were already streamed above (each exactly once) - reuse those tails rather than
             // streaming either file a second time, which would otherwise see nothing new left
             // to read.
             $lines = match ($file) {
@@ -232,9 +245,7 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
             }
         });
 
-        if ($result['has_file']) {
-            $this->logOffsetStore->save($file, $result['offset'], 0);
-        }
+        $this->stageCursor($file, $result, 0);
 
         return $tail;
     }
@@ -270,9 +281,7 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
             }
         });
 
-        if ($result['has_file']) {
-            $this->logOffsetStore->save($file, $result['offset'], 0);
-        }
+        $this->stageCursor($file, $result, 0);
 
         return ['new_lines' => $count, 'tail' => $tail];
     }
@@ -317,77 +326,131 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
 
         $total = $result['previous_running_count'] + $newMatches;
 
-        if ($result['has_file']) {
-            $this->logOffsetStore->save($file, $result['offset'], $total);
-        }
+        $this->stageCursor($file, $result, $total);
 
         return ['total' => $total, 'recent' => $recent, 'tail' => $tail];
     }
 
     /**
-     * Streams only the bytes appended to $file since the last saved offset for it, calling
-     * $onLine for each new line with its line-ending stripped. The first time a file is seen
-     * (no stored offset yet), or when the stored offset exceeds the file's current size (it
-     * was rotated or truncated since last read), this reads from byte 0 instead - identical to
-     * every run's behavior before offsets existed. A missing file or any read error is treated
-     * the same as an empty file with nothing new - this reporter must never fail a whole report
-     * over one unreadable log, and must never advance or lose a saved offset over a failed read.
+     * Stages $result's cursor for $file (committed later by ReportSender after a good send).
      *
-     * When the stored offset already equals the file's current size (nothing has been
-     * appended since last run - the common case on a quiet file), this skips opening the file
-     * at all rather than seeking a stream exactly to its own current end: Magento's own
-     * Filesystem\File\Read::eof() doesn't reliably agree it's at EOF right after such a seek
-     * (no read has actually touched that position yet to set its internal flag), and the
-     * readLine() this loop would then call throws FileSystemException instead of returning
-     * false - confirmed against a real multi-hundred-MB exception.log, not a hypothetical.
-     * Reading sequentially *through* to a file's true end (the startOffset < size case below)
-     * doesn't hit this, since by the time eof() is checked a real read has already landed on
-     * it.
+     * @param string $file
+     * @param array{offset: int, previous_running_count: int, has_file: bool, fingerprint_crc: int, fingerprint_length: int} $result
+     * @param int $runningCount
+     */
+    private function stageCursor(string $file, array $result, int $runningCount): void
+    {
+        if ($result['has_file']) {
+            $this->logOffsetStore->stage(
+                $file,
+                $result['offset'],
+                $runningCount,
+                $result['fingerprint_crc'],
+                $result['fingerprint_length']
+            );
+        }
+    }
+
+    /**
+     * Streams only the bytes appended to $file since the last committed offset for it, calling
+     * $onLine for each new line with its line-ending stripped.
      *
-     * Deliberately does not persist the new offset itself - callers that also need to persist
-     * a running_count alongside it (see scanExceptionLog()) would otherwise have no way to
-     * combine both into a single save() call.
+     * Where reading starts: the stored offset when the file is the one that offset belongs to;
+     * otherwise (never seen, offset past the end, or the fingerprint of the first bytes no
+     * longer matches - it was rotated or truncated and may already have outgrown the old
+     * offset) the start of the file, but never further back than FIRST_READ_MAX_BYTES from the
+     * end, so a multi-GB log cannot stall a run. When that lands mid-line, the partial first
+     * line is dropped. A row written by an older version has no fingerprint, and is trusted
+     * as long as its offset is within the file.
+     *
+     * Lines are read with an explicit "\n" ending (without one, stream_get_line returns
+     * 64 KB blocks) and the loop runs until tell() reaches the size stat() reported, not until
+     * eof(): after the final newline stream_get_line() returns false before eof() flips, and
+     * Magento turns that false into an exception.
+     *
+     * When the stored offset already equals the file's current size (nothing appended - the
+     * common case on a quiet file) the file isn't opened at all.
+     *
+     * A missing or unreadable file reports "nothing new" and carries the stored running count
+     * forward unchanged (so a log rotated away doesn't make the total drop to 0 and then jump
+     * back). Nothing is persisted here: callers stage the result, see stageCursor().
      *
      * @param ReadInterface $dir
      * @param string $file
      * @param callable $onLine
-     * @return array{offset: int, previous_running_count: int, has_file: bool}
+     * @return array{offset: int, previous_running_count: int, has_file: bool, fingerprint_crc: int, fingerprint_length: int}
      */
     private function streamNewLines(ReadInterface $dir, string $file, callable $onLine): array
     {
+        $state = null;
+        $unchanged = [
+            'offset' => 0,
+            'previous_running_count' => 0,
+            'has_file' => false,
+            'fingerprint_crc' => 0,
+            'fingerprint_length' => 0,
+        ];
+
         try {
+            $state = $this->logOffsetStore->get($file);
+            $unchanged['previous_running_count'] = $state['running_count'] ?? 0;
+
             if (!$dir->isExist($file)) {
-                return ['offset' => 0, 'previous_running_count' => 0, 'has_file' => false];
+                return $unchanged;
             }
 
             $size = (int)($dir->stat($file)['size'] ?? 0);
-            $state = $this->logOffsetStore->get($file);
-            $startOffset = ($state !== null && $state['byte_offset'] <= $size) ? $state['byte_offset'] : 0;
 
-            if ($state !== null && $startOffset === $size) {
+            if ($state !== null && $state['byte_offset'] === $size && $state['fingerprint_length'] === 0) {
                 return [
-                    'offset' => $startOffset,
+                    'offset' => $size,
                     'previous_running_count' => $state['running_count'],
                     'has_file' => true,
-                ];
+                    'fingerprint_crc' => 0,
+                    'fingerprint_length' => 0,
+                ] + $unchanged;
             }
 
             $stream = $dir->openFile($file);
 
             try {
-                if ($startOffset > 0) {
-                    $stream->seek($startOffset);
+                $sameFile = $state !== null
+                    && $state['byte_offset'] <= $size
+                    && $this->fingerprintMatches($stream, $state);
+
+                if ($sameFile && $state['byte_offset'] === $size) {
+                    return [
+                        'offset' => $size,
+                        'previous_running_count' => $state['running_count'],
+                        'has_file' => true,
+                        'fingerprint_crc' => $state['fingerprint_crc'],
+                        'fingerprint_length' => $state['fingerprint_length'],
+                    ];
                 }
 
-                while (!$stream->eof()) {
-                    $line = $stream->readLine(self::MAX_LINE_LENGTH);
+                $startOffset = $sameFile ? $state['byte_offset'] : max(0, $size - self::FIRST_READ_MAX_BYTES);
+
+                // Always seek: fingerprintMatches() left the stream somewhere near the start.
+                $stream->seek($startOffset);
+                if ($startOffset > 0 && !$sameFile) {
+                    // Landed mid-line: drop the partial first line.
+                    $stream->readLine(self::MAX_LINE_LENGTH, "\n");
+                }
+
+                while ((int)$stream->tell() < $size) {
+                    $line = $stream->readLine(self::MAX_LINE_LENGTH, "\n");
                     $onLine(rtrim($line, "\r\n"));
                 }
 
+                $offset = (int)$stream->tell();
+                $fingerprint = $this->fingerprint($stream, $offset);
+
                 return [
-                    'offset' => (int)$stream->tell(),
+                    'offset' => $offset,
                     'previous_running_count' => $state['running_count'] ?? 0,
                     'has_file' => true,
+                    'fingerprint_crc' => $fingerprint['crc'],
+                    'fingerprint_length' => $fingerprint['length'],
                 ];
             } finally {
                 $stream->close();
@@ -395,9 +458,48 @@ class LogReporter implements ReporterInterface, MetricCatalogInterface, Declares
         // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
         } catch (Throwable) {
             // Best-effort - an unreadable log must not fail this reporter or the whole report,
-            // and must not advance a saved offset over a read it didn't actually complete.
-            return ['offset' => 0, 'previous_running_count' => 0, 'has_file' => false];
+            // and must not advance a stored offset over a read it didn't actually complete.
+            return $unchanged;
         }
+    }
+
+    /**
+     * Whether the first bytes of the open file still hash to the stored fingerprint; true when
+     * none was stored (a row from an older version).
+     *
+     * @param FileReadInterface $stream
+     * @param array{fingerprint_crc: int, fingerprint_length: int} $state
+     */
+    private function fingerprintMatches(FileReadInterface $stream, array $state): bool
+    {
+        if ($state['fingerprint_length'] === 0) {
+            return true;
+        }
+
+        $stream->seek(0);
+        $head = (string)$stream->read($state['fingerprint_length']);
+
+        return strlen($head) === $state['fingerprint_length'] && crc32($head) === $state['fingerprint_crc'];
+    }
+
+    /**
+     * CRC32 of the file's first min($upTo, FINGERPRINT_BYTES) bytes, and how many were hashed.
+     *
+     * @param FileReadInterface $stream
+     * @param int $upTo
+     * @return array{crc: int, length: int}
+     */
+    private function fingerprint(FileReadInterface $stream, int $upTo): array
+    {
+        $length = min($upTo, self::FINGERPRINT_BYTES);
+        if ($length <= 0) {
+            return ['crc' => 0, 'length' => 0];
+        }
+
+        $stream->seek(0);
+        $head = (string)$stream->read($length);
+
+        return ['crc' => crc32($head), 'length' => strlen($head)];
     }
 
     /**

@@ -23,6 +23,26 @@ use Throwable;
 class ComposerLockReader
 {
     /**
+     * @var bool
+     */
+    private bool $rawLoaded = false;
+
+    /**
+     * @var string|null
+     */
+    private ?string $raw = null;
+
+    /**
+     * @var bool
+     */
+    private bool $decodedLoaded = false;
+
+    /**
+     * @var array<string,mixed>|null
+     */
+    private ?array $decoded = null;
+
+    /**
      * @param Filesystem $filesystem
      * @param Json $json
      */
@@ -33,29 +53,58 @@ class ComposerLockReader
     }
 
     /**
-     * The raw contents of the project root's composer.lock, or null if it doesn't exist.
+     * The raw composer.lock contents, or null if the file doesn't exist.
+     *
+     * Read once per process: the lock is ~1 MB and several reporters plus the payload
+     * envelope all need it within one send.
      */
     public function getRawContents(): ?string
     {
-        $root = $this->filesystem->getDirectoryRead(DirectoryList::ROOT);
+        if (!$this->rawLoaded) {
+            $root = $this->filesystem->getDirectoryRead(DirectoryList::ROOT);
+            $this->raw = $root->isExist('composer.lock') ? $root->readFile('composer.lock') : null;
+            $this->rawLoaded = true;
+        }
 
-        return $root->isExist('composer.lock') ? $root->readFile('composer.lock') : null;
+        return $this->raw;
     }
 
     /**
-     * The project root's composer.lock, JSON-decoded, or null if it's missing or malformed.
+     * The parsed composer.lock, or null if it is missing or isn't valid JSON (decoded once per process).
      *
-     * @return array<string, mixed>|null
+     * @return array<string,mixed>|null
      */
     public function getDecoded(): ?array
     {
-        $contents = $this->getRawContents();
-        if ($contents === null) {
-            return null;
+        if (!$this->decodedLoaded) {
+            $contents = $this->getRawContents();
+
+            try {
+                $decoded = $contents === null ? null : $this->json->unserialize($contents);
+                $this->decoded = is_array($decoded) ? $decoded : null;
+            } catch (Throwable) {
+                $this->decoded = null;
+            }
+            $this->decodedLoaded = true;
         }
 
+        return $this->decoded;
+    }
+
+    /**
+     * composer.lock's modification time (unix), or null if unknown - used to invalidate caches
+     * of anything derived from the installed packages.
+     */
+    public function getMtime(): ?int
+    {
         try {
-            return $this->json->unserialize($contents);
+            $root = $this->filesystem->getDirectoryRead(DirectoryList::ROOT);
+            if (!$root->isExist('composer.lock')) {
+                return null;
+            }
+            $mtime = $root->stat('composer.lock')['mtime'] ?? null;
+
+            return is_int($mtime) ? $mtime : null;
         } catch (Throwable) {
             return null;
         }

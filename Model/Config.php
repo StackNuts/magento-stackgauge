@@ -17,6 +17,10 @@ use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 /**
  * Reads StackGauge's own store-scoped system config (Stores > Configuration > Advanced >
  * StackGauge), decrypting the two encrypted fields on the way out.
+ *
+ * Every field is declared at default scope only (showInWebsite/showInStore are 0 in
+ * system.xml). Getters accept an optional store id and read at store scope, which resolves to the
+ * default value; the slot counts are constants because the cron schedules are fixed.
  */
 class Config
 {
@@ -28,9 +32,18 @@ class Config
     private const XML_PATH_DISABLED_REPORTERS = 'stacknuts_stackgauge/general/disabled_reporters';
     private const XML_PATH_ADDITIONAL_LOG_FILES = 'stacknuts_stackgauge/general/additional_log_files';
     private const XML_PATH_LOG_LEVEL = 'stacknuts_stackgauge/log/log_level';
-    private const XML_PATH_SLOTS = 'stacknuts_stackgauge/cadence/%s_slots';
-    private const MAX_SLOTS = 12;
+
+    /**
+     * Fixed slot counts, matching the schedules in etc/config.xml (hourly job every 20 minutes,
+     * two daily jobs). They are constants, not settings: a count the schedules don't honour
+     * leaves a slot that never runs or runs twice.
+     */
+    public const HOURLY_SLOTS = 3;
+    public const DAILY_SLOTS = 2;
+
     private const XML_PATH_SELF_PROBE_ENABLED = 'stacknuts_stackgauge/general/self_probe_enabled';
+    private const XML_PATH_COMPOSER_BINARY = 'stacknuts_stackgauge/general/composer_binary';
+    private const XML_PATH_SEND_REVENUE = 'stacknuts_stackgauge/general/send_revenue';
 
     /**
      * @param ScopeConfigInterface $scopeConfig
@@ -135,16 +148,14 @@ class Config
     }
 
     /**
-     * How many evenly spaced runs a cadence tier is split into (1 to 12).
+     * How many runs a cadence tier is split into - fixed to match the cron schedules (3 hourly,
+     * 2 daily).
      *
      * @param string $cadence One of DeclaresCadenceInterface::CADENCE_*.
      */
     public function getSlotCount(string $cadence): int
     {
-        $key = $cadence === DeclaresCadenceInterface::CADENCE_DAILY ? 'daily' : 'hourly';
-        $value = (int)$this->scopeConfig->getValue(sprintf(self::XML_PATH_SLOTS, $key));
-
-        return min(self::MAX_SLOTS, max(1, $value));
+        return $cadence === DeclaresCadenceInterface::CADENCE_DAILY ? self::DAILY_SLOTS : self::HOURLY_SLOTS;
     }
 
     /**
@@ -207,5 +218,25 @@ class Config
     public function isSelfProbeEnabled(?int $storeId = null): bool
     {
         return $this->scopeConfig->isSetFlag(self::XML_PATH_SELF_PROBE_ENABLED, ScopeInterface::SCOPE_STORE, $storeId);
+    }
+
+    /**
+     * Whether the Sales reporter may include revenue figures (default yes). Order counts are always sent.
+     *
+     * @param int|null $storeId
+     */
+    public function isSendRevenueEnabled(?int $storeId = null): bool
+    {
+        return $this->scopeConfig->isSetFlag(self::XML_PATH_SEND_REVENUE, ScopeInterface::SCOPE_STORE, $storeId);
+    }
+
+    /**
+     * Path to the composer binary used by reporters that shell out to it (cron's PATH often lacks it).
+     */
+    public function getComposerBinary(): string
+    {
+        $path = trim((string)$this->scopeConfig->getValue(self::XML_PATH_COMPOSER_BINARY));
+
+        return $path !== '' ? $path : 'composer';
     }
 }

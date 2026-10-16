@@ -13,7 +13,7 @@ namespace StackNuts\StackGauge\Model\Util;
  * Magento and third-party modules routinely log request payloads, customer emails, API
  * responses and the odd credential - none of which should leave the store just because the
  * dashboard shows a log tail. Best-effort pattern matching, not a guarantee: it targets the
- * common shapes (emails, key=value secrets, bearer tokens, long opaque tokens, card numbers)
+ * common shapes (emails, IP addresses, MySQL duplicate-entry values, key=value secrets, bearer tokens, long opaque tokens, card numbers)
  * while leaving the line readable enough to diagnose from.
  */
 class LogLineRedactor
@@ -28,6 +28,24 @@ class LogLineRedactor
      */
     public function redact(string $line): string
     {
+        // MySQL echoes the offending value (often an email or customer name) back in its error.
+        $line = (string)preg_replace(
+            "/(Duplicate entry )'(?:[^'\\\\]|\\\\.)*'/i",
+            "$1'[redacted]'",
+            $line
+        );
+
+        // IPv4, then IPv6 (full or `::`-compressed; lookarounds keep clock times like 12:30:45
+        // and Class::method names out of it).
+        $line = (string)preg_replace('/(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])/', '[ip]', $line);
+        $hex = '[0-9a-f]{1,4}';
+        $line = (string)preg_replace(
+            '/(?<![\w:])(?:(?:' . $hex . ':){7}' . $hex
+                . '|(?:' . $hex . '(?::' . $hex . '){0,6})?::(?:' . $hex . '(?::' . $hex . '){0,6})?)(?![\w:])/i',
+            '[ip]',
+            $line
+        );
+
         $line = (string)preg_replace('/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/i', '$1 [redacted]', $line);
 
         // key=value / "key": "value" / key: value, for any secret-looking key - skipping an

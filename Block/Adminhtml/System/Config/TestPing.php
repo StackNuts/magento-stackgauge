@@ -12,9 +12,9 @@ use Magento\Config\Block\System\Config\Form\Field;
 use Magento\Framework\Data\Form\Element\AbstractElement;
 
 /**
- * Renders the "Send All Data Now" button. Save the config first, then it
- * sends every report slot immediately - so the dashboard has real data without
- * waiting for the cron ticks.
+ * Renders the "Send Test Data" button. Save the config first, then it sends
+ * a heartbeat, the metric catalog and the current hourly slot immediately - so
+ * the dashboard has real data without waiting for the cron ticks.
  */
 class TestPing extends Field
 {

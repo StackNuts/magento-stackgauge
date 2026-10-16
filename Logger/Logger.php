@@ -129,11 +129,35 @@ class Logger implements LoggerInterface
      */
     public function log($level, string|\Stringable $message, array $context = []): void
     {
-        if (!is_int($level) || !$this->shouldLog($level)) {
+        $numericLevel = $this->normaliseLevel($level);
+        if ($numericLevel === null || !$this->shouldLog($numericLevel)) {
             return;
         }
 
-        $this->writer->log($level, $message, $context);
+        $this->writer->log($numericLevel, $message, $context);
+    }
+
+    /**
+     * Resolves a PSR-3 string level ("info"), a Monolog level enum or an int to Monolog's int
+     * level; null for anything unrecognised.
+     *
+     * @param mixed $level
+     */
+    private function normaliseLevel(mixed $level): ?int
+    {
+        if (is_int($level)) {
+            return $level;
+        }
+
+        if (!is_string($level) && !$level instanceof \Monolog\Level) {
+            return null;
+        }
+
+        try {
+            return MonologLogger::toMonologLevel($level)->value;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**

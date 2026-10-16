@@ -52,6 +52,15 @@
                     <comment>Every heartbeat (every few minutes), this server curls its own homepage and reports whether it responded normally, served a genuine Magento error page, or looks like it never reached Magento at all (a WAF/CDN challenge, most commonly) - distinguishing "the site is actually down" from "something in front of it blocked the check," which a plain uptime ping can't do. Off disables this one check only; everything else keeps working.</comment>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
+                <field id="send_revenue" translate="label comment" type="select" sortOrder="67" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Send Revenue Figures</label>
+                    <comment>The Sales report includes hourly revenue (sum of base grand totals, excluding canceled orders, per base currency). Set to No to keep revenue on this server - order counts are still sent.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                </field>
+                <field id="composer_binary" translate="label comment" type="text" sortOrder="68" showInDefault="1" showInWebsite="0" showInStore="0">
+                    <label>Composer Binary</label>
+                    <comment>Absolute path to the composer executable (for example /usr/local/bin/composer), used by the Patch Installer reporter. Cron often has no composer on its PATH. Leave empty to use "composer".</comment>
+                </field>
                 <field id="test_ping" translate="label" sortOrder="70" showInDefault="1" showInWebsite="0" showInStore="0">
                     <label>Send Now</label>
                     <frontend_model>StackNuts\StackGauge\Block\Adminhtml\System\Config\TestPing</frontend_model>

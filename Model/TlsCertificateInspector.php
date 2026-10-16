@@ -20,7 +20,8 @@ use StackNuts\StackGauge\Model\Util\Clock;
  * store behind a VPN or firewall that blocks the dashboard's own IP still gets a real answer.
  *
  * Every call makes verification its first attempt - the same peer/name checks a real browser
- * enforces - and only falls back to a second, unverified attempt if that one fails, purely to
+ * enforces, retried once so a transient network error isn't read as an untrusted certificate -
+ * and only falls back to an unverified attempt if both fail, purely to
  * keep a self-signed or internally-issued certificate's expiry readable. That second attempt
  * always reports trusted=false regardless of what the certificate itself claims; it exists to
  * keep expiry visible on a dev/staging store, not to paper over the trust failure.
@@ -29,6 +30,12 @@ class TlsCertificateInspector
 {
     private const PORT = 443;
     private const TIMEOUT_SECONDS = 5.0;
+
+    /**
+     * The last connection error text from connectAndParse(), kept so a failed verification can
+     * say why it failed.
+     */
+    protected string $lastConnectError = '';
 
     /**
      * @param Clock $clock
@@ -58,9 +65,18 @@ class TlsCertificateInspector
      */
     public function inspect(string $host): array
     {
+        $this->lastConnectError = '';
         $parsed = $this->connectAndParse($host, verifyPeer: true);
         $trusted = true;
 
+        if ($parsed === null) {
+            // One more verified try before calling the certificate untrusted: a timeout or reset
+            // on the first attempt looks identical to a failed verification, and would otherwise
+            // raise a false "untrusted certificate" finding.
+            $parsed = $this->connectAndParse($host, verifyPeer: true);
+        }
+
+        $verifyError = $this->lastConnectError;
         if ($parsed === null) {
             $trusted = false;
             $parsed = $this->connectAndParse($host, verifyPeer: false);
@@ -72,7 +88,7 @@ class TlsCertificateInspector
             );
         }
 
-        return $this->fromParsedCertificate($parsed, $trusted);
+        return $this->fromParsedCertificate($parsed, $trusted, $verifyError);
     }
 
     /**
@@ -110,6 +126,7 @@ class TlsCertificateInspector
         );
 
         if ($socket === false) {
+            $this->lastConnectError = trim($errorMessage);
             return null;
         }
 
@@ -134,6 +151,7 @@ class TlsCertificateInspector
      *
      * @param array<string,mixed> $parsed openssl_x509_parse()'s result for the peer certificate.
      * @param bool $trusted
+     * @param string $verifyError Why the verified attempt failed, when $trusted is false.
      * @return array{
      *     attempted: bool,
      *     connected: bool,
@@ -145,7 +163,7 @@ class TlsCertificateInspector
      *     error: string|null
      * }
      */
-    private function fromParsedCertificate(array $parsed, bool $trusted): array
+    private function fromParsedCertificate(array $parsed, bool $trusted, string $verifyError = ''): array
     {
         $expiresAtTimestamp = (int)($parsed['validTo_time_t'] ?? 0);
         $expiresAt = (new DateTimeImmutable('@' . $expiresAtTimestamp))->setTimezone(new DateTimeZone('UTC'));
@@ -161,7 +179,8 @@ class TlsCertificateInspector
             'subject' => (string)(($parsed['subject'] ?? [])['CN'] ?? ''),
             'error' => $trusted
                 ? null
-                : 'Certificate failed verification; expiry was still read directly from the server.',
+                : 'Certificate failed verification' . ($verifyError !== '' ? ' (' . $verifyError . ')' : '')
+                    . '; expiry was still read directly from the server.',
         ];
     }
 

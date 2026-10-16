@@ -167,7 +167,7 @@ class SectionTest extends TestCase
         $this->assertCount(1, $section->getRows());
     }
 
-    public function testTableSectionRejectsTooManyRows(): void
+    public function testTableSectionTruncatesAndFlagsTooManyRows(): void
     {
         $field = new Field();
         $rows = [];
@@ -175,9 +175,27 @@ class SectionTest extends TestCase
             $rows[] = $field->array((string) $i, ['name' => $field->varchar('Name', (string) $i)]);
         }
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeding the max of');
+        $section = (new Section())->table('big', 'Big', 'Lots.', $rows);
+        $wire = $section->jsonSerialize();
 
-        (new Section())->table('big', 'Big', '', $rows);
+        $this->assertTrue($section->isTruncated());
+        $this->assertCount(\StackNuts\StackGauge\Api\Field\ArrayField::MAX_ITEMS, $section->getRows());
+        $this->assertTrue($wire['truncated']);
+        $this->assertStringContainsString('Truncated', $wire['description']);
+        $this->assertStringStartsWith('Lots.', $wire['description']);
+    }
+
+    public function testTableSectionAtTheLimitIsNotFlagged(): void
+    {
+        $field = new Field();
+        $rows = [];
+        for ($i = 0; $i < \StackNuts\StackGauge\Api\Field\ArrayField::MAX_ITEMS; $i++) {
+            $rows[] = $field->array((string) $i, ['name' => $field->varchar('Name', (string) $i)]);
+        }
+
+        $wire = (new Section())->table('big', 'Big', 'Lots.', $rows)->jsonSerialize();
+
+        $this->assertFalse($wire['truncated']);
+        $this->assertSame('Lots.', $wire['description']);
     }
 }

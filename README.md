@@ -52,7 +52,8 @@ These settings apply to the whole Magento instance (default scope only) - one in
 reports as one site, not one report per store view.
 
 Click **Send Now** after saving to verify the endpoint URL and API key work end to end; a
-successful click sends a heartbeat, both report cadences, and a config sync immediately.
+successful click sends a heartbeat, the config sync and the hourly slot the clock is in now (not
+every slot - use `bin/magento stackgauge:send` for that); concurrent clicks are rejected by a lock.
 
 ## What gets collected
 
@@ -73,7 +74,7 @@ data. Full detail on exact fields lives in the dashboard's own documentation.
 | `SearchReporter` | `search` | Configured search engine and whether it's actually reachable (Elasticsearch/OpenSearch only) |
 | `RabbitMqReporter` | `rabbitmq` | Per-queue message/consumer count, if RabbitMQ is configured |
 | `DbQueueReporter` | `db_queue` | Per-queue backlog and error count for every queue routed through the "db" message-queue connection |
-| `UptimeReporter` | `uptime` | Hourly storefront self-probe result (reachable / blocked / genuine error page) plus TLS certificate expiry/trust on this store's own https host(s) - see "Storefront self-probe" |
+| `UptimeReporter` | `uptime` | Hourly storefront self-probe (sent with a `StackGauge/<version>` User-Agent) result (reachable / blocked / genuine error page) plus TLS certificate expiry/trust on this store's own https host(s) - see "Storefront self-probe" |
 | `DiskSpaceReporter` | `disk` | Free/total bytes for `var/log`, `var/cache`, and media, checked independently |
 | `ServerResourcesReporter` | `server` | Load average, CPU core count/busy percent, and memory/swap usage from procfs, with cgroup v2 limits honoured in a container |
 | `DatabaseReporter` | `database` | MySQL/MariaDB version and reachability |
@@ -84,10 +85,10 @@ data. Full detail on exact fields lives in the dashboard's own documentation.
 | `CustomerSignalsReporter` | `customers` | Customer counts and recent activity |
 | `AbandonedCartsReporter` | `abandoned_carts` | Counts of carts with items and no activity in the last 24h |
 | `ProductHealthReporter` | `product_health` | Counts of common product data issues (e.g. missing image/price) |
-| `PaymentMethodsReporter` | `payments` | Enabled payment methods and key configuration flags |
+| `PaymentMethodsReporter` | `payments` | Payment methods enabled in at least one store view, and which store views |
 | `StoreViewsReporter` | `store_views` | Configured store views, locale, and currency |
 | `ThemeReporter` | `themes` | Active frontend and admin themes |
-| `PHPExtensionsReporter` | `php_extensions` | Presence and versions of important PHP extensions |
+| `PHPExtensionsReporter` | `php_extensions` | Presence and versions of important PHP extensions, as seen by the CLI/cron PHP (not necessarily the web PHP) |
 | `LogReporter` | `logs` | Recent log activity and exception summaries for the files configured under Monitored Log Files |
 | `ReportReporter` | `reports` | Counts (last hour / 24h) of `var/report` fatal-error reports (storefront and API), the 5 newest with a distilled message and URL path, and the most frequent messages from the last 24h |
 
@@ -191,10 +192,15 @@ table; no catalog, sales, or customer data is ever touched.
 
 Runs in its own `stackgauge` cron group:
 
-- `stacknuts_stackgauge_send_report` - full collection (hourly-cadence reporters), hourly by default.
-- `stacknuts_stackgauge_send_daily_report` - full collection (daily-cadence reporters, e.g. `catalog`/`coupons`), daily by default.
+- `stacknuts_stackgauge_send_report` - full collection of the hourly tier, every 20 minutes: the
+  tier is split into 3 slots and each run collects one, so every hourly reporter reports once an hour.
+- `stacknuts_stackgauge_send_daily_report` / `stacknuts_stackgauge_send_daily_report_slot_1` - full
+  collection of the daily tier (e.g. `catalog`/`coupons`), split into 2 slots run at 00:00 and 01:00.
 - `stacknuts_stackgauge_send_heartbeat` - lightweight ping, every 5 minutes by default.
 - `stacknuts_stackgauge_send_config_sync` - trackable-metric catalog sync, daily by default.
+
+The slot counts (3 hourly, 2 daily) are fixed to match these schedules, and the group runs in its
+own cron process (`use_separate_process=1`) so collection and network time don't delay other groups.
 
 Every job, and the maintenance-mode plugin, catch every exception internally - a dashboard
 outage or misconfiguration can never fail a cron run or block Magento's own maintenance

@@ -93,17 +93,21 @@ class SearchReporter implements ReporterInterface, MetricCatalogInterface, Decla
     }
 
     /**
-     * Reports the configured search engine, whether it's pingable, whether it answered, and the product index document count.
+     * Reports the configured search engine, whether it's pingable, whether it answered, and the lowest product index document count across store views.
      */
     public function getStatus(): array
     {
         $engine = $this->clientResolver->getCurrentEngine();
         $pingable = in_array($engine, self::PINGABLE_ENGINES, true);
 
+        // One client for both the ping and the document count: building it twice would double
+        // the engine timeout in the worst case.
+        $client = null;
         $reachable = false;
         if ($pingable) {
             try {
-                $reachable = (bool)$this->clientResolver->create()->testConnection();
+                $client = $this->clientResolver->create();
+                $reachable = (bool)$client->testConnection();
             } catch (Throwable) {
                 $reachable = false;
             }
@@ -118,7 +122,7 @@ class SearchReporter implements ReporterInterface, MetricCatalogInterface, Decla
         // Only meaningful once the cluster answers - catches the case where it's up but the
         // product index is empty/missing, which "reachable: false" alone would not.
         if ($reachable) {
-            $documentCount = $this->indexDocumentCount();
+            $documentCount = $this->indexDocumentCount($client);
             if ($documentCount !== null) {
                 $fields['index_document_count'] = $this->field->trackableNumber(
                     'Product Index Document Count',
@@ -154,32 +158,55 @@ class SearchReporter implements ReporterInterface, MetricCatalogInterface, Decla
     }
 
     /**
-     * Counts documents in the current store's product fulltext index; only supported on OpenSearch clients.
+     * The smallest product fulltext index document count across every store view, so one empty
+     * or missing index is caught even when the default store's is fine. Only supported on
+     * OpenSearch clients.
+     *
+     * @param mixed $client The client already created by getStatus().
      */
-    private function indexDocumentCount(): ?int
+    private function indexDocumentCount(mixed $client): ?int
+    {
+        if (!$client instanceof SearchClient) {
+            // Only OpenSearch exposes the raw client this needs; other engines just omit
+            // this metric rather than a hard failure.
+            return null;
+        }
+
+        $lowest = null;
+        try {
+            foreach ($this->storeManager->getStores(false) as $store) {
+                $count = $this->storeIndexDocumentCount($client, (int)$store->getId());
+                if ($count === null) {
+                    return null;
+                }
+                $lowest = $lowest === null ? $count : min($lowest, $count);
+            }
+        } catch (Throwable) {
+            return null;
+        }
+
+        return $lowest;
+    }
+
+    /**
+     * Document count of one store view's product index.
+     *
+     * A missing index (the scenario this metric exists to catch) throws rather than returning 0 -
+     * treat that specific case as a real, reportable 0. Any other failure (network blip, auth,
+     * etc.) stays null/omitted instead of reporting a value that could look like a real
+     * alertable state.
+     *
+     * @param SearchClient $client
+     * @param int $storeId
+     */
+    private function storeIndexDocumentCount(SearchClient $client, int $storeId): ?int
     {
         try {
-            $client = $this->clientResolver->create();
-
-            if (!$client instanceof SearchClient) {
-                // Only OpenSearch exposes the raw client this needs; other engines just omit
-                // this metric rather than a hard failure.
-                return null;
-            }
-
-            $indexName = $this->searchIndexNameResolver->getIndexName(
-                (int)$this->storeManager->getStore()->getId(),
-                Fulltext::INDEXER_ID
-            );
-
+            $indexName = $this->searchIndexNameResolver->getIndexName($storeId, Fulltext::INDEXER_ID);
             $result = $client->getOpenSearchClient()->count(['index' => $indexName]);
 
             return (int)($result['count'] ?? 0);
         } catch (Throwable $e) {
-            // A missing index (the scenario this metric exists to catch) throws rather than
-            // returning 0 - treat that specific case as a real, reportable 0. Any other
-            // failure (network blip, auth, etc.) stays null/omitted instead of reporting a
-            // value that could look like a real alertable state.
             return str_contains(strtolower($e->getMessage()), 'index_not_found') ? 0 : null;
         }
     }

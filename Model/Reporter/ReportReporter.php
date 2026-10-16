@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model\Reporter;
 
+use FilesystemIterator;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadInterface;
@@ -51,7 +52,7 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
     private const METRIC_NEW_LAST_HOUR = 'reports.new_last_hour';
 
     /**
-     * Bounds how many var/report entries get stat()'d in one run - a runaway loop writing
+     * Bounds how many var/report entries get examined in one run - a runaway loop writing
      * thousands of reports must not turn this reporter itself into the next outage. "summary"
      * reports whether this cap was actually hit, so a real overflow is visible rather than
      * silently truncated.
@@ -81,6 +82,12 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
      * Longest "message" column value shown, matching the original extractMessage()'s own cap.
      */
     private const MESSAGE_MAX_LENGTH = 300;
+
+    /**
+     * Wall-clock budget for the directory walk, so a huge var/report on slow storage can't
+     * stall the whole report.
+     */
+    private const SCAN_TIME_BUDGET_SECONDS = 10;
 
     private const SECONDS_PER_HOUR = 3600;
     private const SECONDS_PER_DAY = 86400;
@@ -144,32 +151,18 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
         $varDir = $this->filesystem->getDirectoryRead(DirectoryList::VAR_DIR);
         $now = $this->clock->now()->getTimestamp();
 
-        $scan = $this->scanReportFiles($varDir);
-        $files = $scan['files'];
-
-        $hourAgo = $now - self::SECONDS_PER_HOUR;
+        $scan = $this->scanReportFiles($varDir, $now);
+        $files = $scan['newest'];
+        $newLastHour = $scan['new_last_hour'];
+        $newLast24h = $scan['new_last_24h'];
         $dayAgo = $now - self::SECONDS_PER_DAY;
 
-        $newLastHour = 0;
-        $newLast24h = 0;
-        foreach ($files as $file) {
-            if ($file['mtime'] < $dayAgo) {
-                // $files is sorted newest-first, so nothing after this point can be newer either.
-                break;
-            }
-
-            $newLast24h++;
-            if ($file['mtime'] >= $hourAgo) {
-                $newLastHour++;
-            }
-        }
-
-        $hasReports = $files !== [];
+        $hasReports = $scan['total'] > 0;
         $newestAgeMinutes = $hasReports ? max(0, intdiv($now - $files[0]['mtime'], 60)) : 0;
 
         $parsed = array_map(
             fn(array $file): array => $this->readAndParse($varDir, $file),
-            array_slice($files, 0, self::SCAN_COUNT)
+            $files
         );
 
         $recentRows = array_map(
@@ -189,7 +182,7 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
 
         return [
             'summary' => $this->section->facts('summary', 'Summary', $this->getDescription(), [
-                'total' => $this->field->number('Total Report Files', count($files)),
+                'total' => $this->field->number('Total Report Files', $scan['total']),
                 'new_last_hour' => $this->field->trackableNumber(
                     'New In Last Hour',
                     $newLastHour,
@@ -204,6 +197,7 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
                     unit: Unit::MINUTES
                 ),
                 'cap_hit' => $this->field->bool('File Scan Capped', $scan['cap_hit']),
+                'truncated' => $this->field->bool('Scan Truncated', $scan['truncated']),
             ]),
             'recent' => $this->section->table('recent', 'Recent Reports', '', $recentRows),
             'top_messages' => $this->section->table(
@@ -243,54 +237,31 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
     }
 
     /**
-     * Every candidate report file (top-level var/report plus var/report/api), stat'd for mtime
-     * and sorted newest-first, capped at MAX_FILES_EXAMINED.
+     * Streams the top-level var/report directory plus var/report/api once, lazily, without
+     * sorting or holding every file name: the 1h/24h/total counts are tallied as entries go by
+     * and only the SCAN_COUNT newest (by mtime) are kept, in a small bounded buffer. Stops at
+     * MAX_FILES_EXAMINED entries or SCAN_TIME_BUDGET_SECONDS, whichever comes first, and says
+     * so in "truncated" (the counts then cover only what was examined).
      *
      * @param ReadInterface $varDir
-     * @return array{files: list<array{path: string, name: string, mtime: int}>, cap_hit: bool}
+     * @param int $now
+     * @return array{
+     *     newest: list<array{path: string, name: string, mtime: int}>,
+     *     total: int, new_last_hour: int, new_last_24h: int, cap_hit: bool, truncated: bool
+     * }
      */
-    private function scanReportFiles(ReadInterface $varDir): array
+    private function scanReportFiles(ReadInterface $varDir, int $now): array
     {
-        $entries = $this->listCandidates($varDir);
+        $hourAgo = $now - self::SECONDS_PER_HOUR;
+        $dayAgo = $now - self::SECONDS_PER_DAY;
+        $deadline = hrtime(true) + (int)(self::SCAN_TIME_BUDGET_SECONDS * 1e9);
 
-        $capHit = count($entries) > self::MAX_FILES_EXAMINED;
-        if ($capHit) {
-            $entries = array_slice($entries, 0, self::MAX_FILES_EXAMINED);
-        }
-
-        $files = [];
-        foreach ($entries as $entry) {
-            try {
-                $stat = $varDir->stat($entry['path']);
-            } catch (Throwable) {
-                // Gone since the directory listing was read (cleaned up, rotated) - just skip it.
-                continue;
-            }
-
-            $files[] = [
-                'path' => $entry['path'],
-                'name' => $entry['name'],
-                'mtime' => (int)($stat['mtime'] ?? 0),
-            ];
-        }
-
-        usort($files, static fn(array $a, array $b): int => $b['mtime'] <=> $a['mtime']);
-
-        return ['files' => $files, 'cap_hit' => $capHit];
-    }
-
-    /**
-     * Every file directly under var/report, plus every file under var/report/api (see this
-     * class's own docblock for why both). Directories encountered while listing either one
-     * (namely "api" itself, and any hash subdirectory from a non-default nesting level) are
-     * skipped rather than descended into.
-     *
-     * @param ReadInterface $varDir
-     * @return list<array{path: string, name: string}>
-     */
-    private function listCandidates(ReadInterface $varDir): array
-    {
-        $entries = [];
+        $total = 0;
+        $newLastHour = 0;
+        $newLast24h = 0;
+        $capHit = false;
+        $timedOut = false;
+        $buffer = [];
 
         foreach (['report' => '', 'report/api' => 'api/'] as $dir => $namePrefix) {
             try {
@@ -298,12 +269,49 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
                     continue;
                 }
 
-                foreach ($varDir->read($dir) as $path) {
-                    if (!$varDir->isFile($path)) {
+                $iterator = new FilesystemIterator(
+                    $varDir->getAbsolutePath($dir),
+                    FilesystemIterator::SKIP_DOTS | FilesystemIterator::CURRENT_AS_FILEINFO
+                );
+
+                foreach ($iterator as $info) {
+                    // Directories (namely "api" itself) are skipped, not descended into.
+                    if (!$info->isFile()) {
                         continue;
                     }
 
-                    $entries[] = ['path' => $path, 'name' => $namePrefix . basename($path)];
+                    if ($total >= self::MAX_FILES_EXAMINED) {
+                        $capHit = true;
+                        break 2;
+                    }
+                    if (($total & 255) === 255 && hrtime(true) > $deadline) {
+                        $timedOut = true;
+                        break 2;
+                    }
+
+                    try {
+                        $mtime = (int)$info->getMTime();
+                    } catch (Throwable) {
+                        // Gone since the directory was read (cleaned up, rotated) - just skip it.
+                        continue;
+                    }
+
+                    $total++;
+                    if ($mtime >= $dayAgo) {
+                        $newLast24h++;
+                        if ($mtime >= $hourAgo) {
+                            $newLastHour++;
+                        }
+                    }
+
+                    $buffer[] = [
+                        'path' => $dir . '/' . $info->getFilename(),
+                        'name' => $namePrefix . $info->getFilename(),
+                        'mtime' => $mtime,
+                    ];
+                    if (count($buffer) >= self::SCAN_COUNT * 4) {
+                        $buffer = $this->newest($buffer);
+                    }
                 }
             } catch (Throwable) {
                 // Best-effort - an unreadable report directory must not fail the whole reporter.
@@ -311,7 +319,27 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
             }
         }
 
-        return $entries;
+        return [
+            'newest' => $this->newest($buffer),
+            'total' => $total,
+            'new_last_hour' => $newLastHour,
+            'new_last_24h' => $newLast24h,
+            'cap_hit' => $capHit,
+            'truncated' => $capHit || $timedOut,
+        ];
+    }
+
+    /**
+     * The SCAN_COUNT newest entries of $entries, newest first.
+     *
+     * @param list<array{path: string, name: string, mtime: int}> $entries
+     * @return list<array{path: string, name: string, mtime: int}>
+     */
+    private function newest(array $entries): array
+    {
+        usort($entries, static fn(array $a, array $b): int => $b['mtime'] <=> $a['mtime']);
+
+        return array_slice($entries, 0, self::SCAN_COUNT);
     }
 
     /**
@@ -372,7 +400,9 @@ class ReportReporter implements ReporterInterface, MetricCatalogInterface, Decla
      */
     private function parseReportContent(string $content): array
     {
-        $content = trim($content);
+        // Report files start with the PHP guard line (php exit, as written by Error\Processor and
+        // Webapi\ErrorProcessor), which would otherwise break json_decode().
+        $content = trim((string)preg_replace('/^\s*<\?php\s+exit;?\s*\?>\R?/', '', $content));
         if ($content === '') {
             return ['message' => '', 'url' => ''];
         }

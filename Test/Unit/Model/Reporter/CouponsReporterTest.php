@@ -11,116 +11,161 @@ namespace StackNuts\StackGauge\Test\Unit\Model\Reporter;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\DB\Select;
+use Magento\Framework\EntityManager\EntityMetadataInterface;
+use Magento\Framework\EntityManager\MetadataPool;
 use Magento\SalesRule\Model\Rule;
 use PHPUnit\Framework\TestCase;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\CouponsReporter;
+use StackNuts\StackGauge\Model\Util\Clock;
 
 class CouponsReporterTest extends TestCase
 {
-    private function mockSelect(): Select
+    /**
+     * @param string $linkField
+     */
+    private function metadataPool(string $linkField = 'rule_id'): MetadataPool
     {
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('joinLeft')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $select->method('order')->willReturnSelf();
+        $metadata = $this->createMock(EntityMetadataInterface::class);
+        $metadata->method('getLinkField')->willReturn($linkField);
+        $pool = $this->createMock(MetadataPool::class);
+        $pool->method('getMetadata')->willReturn($metadata);
 
-        return $select;
+        return $pool;
+    }
+
+    /**
+     * @param ResourceConnection $resource
+     * @param string $linkField
+     */
+    private function reporter(ResourceConnection $resource, string $linkField = 'rule_id'): CouponsReporter
+    {
+        return new CouponsReporter($resource, new Field(), new Section(), $this->metadataPool($linkField), new Clock());
+    }
+
+    /**
+     * @param list<array<string,mixed>> $rules
+     * @param array<int|string,int|string> $counts
+     * @param list<string> $wheres collects every where() clause passed to any select
+     */
+    private function resource(array $rules, array $counts = [], array &$wheres = []): ResourceConnection
+    {
+        $resource = $this->createMock(ResourceConnection::class);
+        $connection = $this->createMock(AdapterInterface::class);
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
+
+        $connection->method('select')->willReturnCallback(function () use (&$wheres): Select {
+            $select = $this->createMock(Select::class);
+            foreach (['from', 'where', 'order', 'group', 'limit'] as $method) {
+                $select->method($method)->willReturnCallback(function (...$args) use ($select, $method, &$wheres) {
+                    if ($method === 'where') {
+                        $wheres[] = (string) $args[0];
+                    }
+
+                    return $select;
+                });
+            }
+
+            return $select;
+        });
+        $connection->method('fetchOne')->willReturn('247');
+        $connection->method('fetchAll')->willReturn($rules);
+        $connection->method('fetchPairs')->willReturn($counts);
+
+        return $resource;
     }
 
     public function testGetStatusReturnsLifetimeTotalAcrossAllRules(): void
     {
-        $resource = $this->createMock(ResourceConnection::class);
-        $connection = $this->createMock(AdapterInterface::class);
-
-        $resource->method('getConnection')->willReturn($connection);
-        $resource->method('getTableName')->willReturnArgument(0);
-        $connection->method('select')->willReturn($this->mockSelect());
-        $connection->method('fetchOne')->willReturn('247');
-        $connection->method('fetchAll')->willReturn([]);
-
-        $reporter = new CouponsReporter($resource, new Field(), new Section());
-        $status = $reporter->getStatus();
+        $status = $this->reporter($this->resource([]))->getStatus();
 
         $fields = $status['general']->getFields();
-        $this->assertArrayHasKey('total_redemptions', $fields);
         $this->assertSame(247, $fields['total_redemptions']->getValue());
         $this->assertSame('coupons.total_redemptions', $fields['total_redemptions']->getMetricKey());
     }
 
-    public function testActiveRulesTableShowsCodeOnlyForSpecificCouponType(): void
+    public function testActiveRulesTableNeverContainsCodesOrDescriptions(): void
     {
-        $resource = $this->createMock(ResourceConnection::class);
-        $connection = $this->createMock(AdapterInterface::class);
-
-        $resource->method('getConnection')->willReturn($connection);
-        $resource->method('getTableName')->willReturnArgument(0);
-        $connection->method('select')->willReturn($this->mockSelect());
-        $connection->method('fetchOne')->willReturn('0');
-        $connection->method('fetchAll')->willReturn([
+        $status = $this->reporter($this->resource(
             [
-                'rule_id' => '4',
-                'name' => '$4 Luma water bottle (save 70%)',
-                'description' => 'Save on the water bottle',
-                'coupon_type' => (string) Rule::COUPON_TYPE_SPECIFIC,
-                'times_used' => '12',
-                'from_date' => '2026-01-01',
-                'to_date' => null,
-                'coupon_count' => '1',
-                'code' => 'BOTTLE4',
+                [
+                    'link_id' => '4', 'rule_id' => '4', 'name' => 'Bottle', 'description' => 'SECRET-DESC',
+                    'code' => 'BOTTLE4', 'coupon_type' => (string) Rule::COUPON_TYPE_SPECIFIC,
+                    'times_used' => '12', 'from_date' => '2026-01-01', 'to_date' => null,
+                ],
+                [
+                    'link_id' => '1', 'rule_id' => '1', 'name' => 'Tees', 'coupon_type' => (string) Rule::COUPON_TYPE_NO_COUPON,
+                    'times_used' => '0', 'from_date' => '2026-01-01', 'to_date' => '2026-12-31',
+                ],
             ],
-            [
-                'rule_id' => '1',
-                'name' => 'Buy 3 tee shirts and get the 4th free',
-                'description' => null,
-                'coupon_type' => (string) Rule::COUPON_TYPE_NO_COUPON,
-                'times_used' => '0',
-                'from_date' => '2026-01-01',
-                'to_date' => '2026-12-31',
-                'coupon_count' => '0',
-                'code' => null,
-            ],
-            [
-                'rule_id' => '7',
-                'name' => 'VIP referral codes',
-                'description' => null,
-                'coupon_type' => (string) Rule::COUPON_TYPE_SPECIFIC,
-                'times_used' => '31',
-                'from_date' => '2026-01-01',
-                'to_date' => null,
-                'coupon_count' => '3',
-                'code' => 'REF001',
-            ],
-        ]);
-
-        $reporter = new CouponsReporter($resource, new Field(), new Section());
-        $status = $reporter->getStatus();
+            ['4' => '3']
+        ))->getStatus();
 
         $rows = $status['active_rules']->getRows();
-        $this->assertCount(3, $rows);
+        $this->assertCount(2, $rows);
 
-        $specific = $rows[0]->getValue();
-        $this->assertSame('Specific Coupon', $specific['coupon_type']->getValue());
-        $this->assertSame('BOTTLE4', $specific['code']->getValue());
-        $this->assertSame('2026-01-01 00:00:00', $specific['from_date']->getValue());
-        $this->assertSame('', $specific['to_date']->getValue());
-        $this->assertSame(12, $specific['times_used']->getValue());
+        $first = $rows[0]->getValue();
+        $this->assertArrayNotHasKey('code', $first);
+        $this->assertArrayNotHasKey('description', $first);
+        $this->assertStringNotContainsString('BOTTLE4', json_encode($status['active_rules']));
+        $this->assertStringNotContainsString('SECRET-DESC', json_encode($status['active_rules']));
+        $this->assertSame('Specific Coupon', $first['coupon_type']->getValue());
+        $this->assertSame(3, $first['coupon_count']->getValue());
+        $this->assertSame('2026-01-01', $first['from_date']->getValue());
+        $this->assertSame('', $first['to_date']->getValue());
 
-        $noCoupon = $rows[1]->getValue();
-        $this->assertSame('No Coupon', $noCoupon['coupon_type']->getValue());
-        $this->assertSame('', $noCoupon['code']->getValue());
-        $this->assertSame('2026-12-31 00:00:00', $noCoupon['to_date']->getValue());
+        $second = $rows[1]->getValue();
+        $this->assertSame('No Coupon', $second['coupon_type']->getValue());
+        $this->assertSame(0, $second['coupon_count']->getValue());
+        $this->assertSame('2026-12-31', $second['to_date']->getValue());
+    }
 
-        // A SPECIFIC-type rule can still carry a batch of many generated codes (admin's "Use
-        // Auto Generation" checkbox) - coupon_type alone doesn't imply exactly one code, so a
-        // multi-code SPECIFIC rule must blank the single "code" field the same as a NO_COUPON
-        // rule, showing its count instead.
-        $batch = $rows[2]->getValue();
-        $this->assertSame('Specific Coupon', $batch['coupon_type']->getValue());
-        $this->assertSame('', $batch['code']->getValue());
-        $this->assertSame(3, $batch['coupon_count']->getValue());
+    public function testExpiredRulesAreFilteredAndOpenSourceHasNoStagingFilter(): void
+    {
+        $wheres = [];
+        $this->reporter($this->resource([], [], $wheres))->getStatus();
+
+        $this->assertNotEmpty(array_filter($wheres, static fn (string $w): bool => str_contains($w, 'to_date')));
+        $this->assertEmpty(array_filter($wheres, static fn (string $w): bool => str_contains($w, 'created_in')));
+    }
+
+    public function testStagingRestrictsToCurrentRowsAndCountsByRowId(): void
+    {
+        $wheres = [];
+        $status = $this->reporter(
+            $this->resource(
+                [[
+                    'link_id' => '90', 'rule_id' => '4', 'name' => 'Bottle', 'coupon_type' => (string) Rule::COUPON_TYPE_SPECIFIC,
+                    'times_used' => '12', 'from_date' => null, 'to_date' => null,
+                ]],
+                ['90' => '5'],
+                $wheres
+            ),
+            'row_id'
+        )->getStatus();
+
+        // Both the total and the rule listing are limited to the current staging row.
+        $this->assertCount(2, array_filter($wheres, static fn (string $w): bool => str_contains($w, 'updated_in > UNIX_TIMESTAMP()')));
+        $this->assertSame(5, $status['active_rules']->getRows()[0]->getValue()['coupon_count']->getValue());
+    }
+
+    public function testMoreThanTheRowLimitIsTruncatedAndFlagged(): void
+    {
+        $rules = [];
+        for ($i = 1; $i <= 501; $i++) {
+            $rules[] = [
+                'link_id' => (string) $i, 'rule_id' => (string) $i, 'name' => 'Rule ' . $i,
+                'coupon_type' => (string) Rule::COUPON_TYPE_NO_COUPON, 'times_used' => '0',
+                'from_date' => null, 'to_date' => null,
+            ];
+        }
+
+        $table = $this->reporter($this->resource($rules))->getStatus()['active_rules'];
+
+        $this->assertCount(500, $table->getRows());
+        $this->assertTrue($table->jsonSerialize()['truncated']);
     }
 
     public function testDeclaresTheTotalRedemptionsTrackableMetric(): void
@@ -130,7 +175,7 @@ class CouponsReporterTest extends TestCase
         $resource->method('getConnection')->willReturn($connection);
         $resource->method('getTableName')->willReturnArgument(0);
 
-        $reporter = new CouponsReporter($resource, new Field(), new Section());
+        $reporter = $this->reporter($resource);
         $metrics = $reporter->getTrackableMetrics();
 
         $this->assertCount(1, $metrics);
@@ -141,7 +186,7 @@ class CouponsReporterTest extends TestCase
     public function testUsesDailyCadence(): void
     {
         $resource = $this->createMock(ResourceConnection::class);
-        $reporter = new CouponsReporter($resource, new Field(), new Section());
+        $reporter = $this->reporter($resource);
 
         $this->assertSame('daily', $reporter->getCadence());
     }
@@ -149,7 +194,7 @@ class CouponsReporterTest extends TestCase
     public function testDeclaresTheCommerceSection(): void
     {
         $resource = $this->createMock(ResourceConnection::class);
-        $reporter = new CouponsReporter($resource, new Field(), new Section());
+        $reporter = $this->reporter($resource);
 
         $this->assertSame('commerce', $reporter->getSection());
     }

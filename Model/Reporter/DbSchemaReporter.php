@@ -85,7 +85,11 @@ class DbSchemaReporter implements ReporterInterface, DeclaresCadenceInterface, M
      * Reports the in-sync and drifted module counts, plus a table of drifted modules.
      *
      * Compares each module's code setup_version (ModuleListInterface) against its setup_module DB row
-     * (ModuleResource).
+     * (ModuleResource); a module with a setup_version but no row counts as drifted ("not installed").
+     *
+     * Limitation: a declarative-schema-only module has no setup_version and no setup_module row, so
+     * pending db_schema.xml changes or data patches for it are not detected here - that needs
+     * Magento's full declarative diff (setup:db:status), too heavy to run in a report.
      */
     public function getStatus(): array
     {
@@ -98,16 +102,15 @@ class DbSchemaReporter implements ReporterInterface, DeclaresCadenceInterface, M
                 continue;
             }
 
+            // No setup_module row at all for a module that declares a setup_version is the
+            // classic "deployed without setup:upgrade" case - drift, shown as "not installed".
             $dbVersion = $this->moduleResource->getDbVersion($name);
-            if ($dbVersion === false) {
-                continue;
-            }
 
-            if ($dbVersion !== $codeVersion) {
+            if ($dbVersion === false || $dbVersion !== $codeVersion) {
                 $drifted[] = $this->field->array($name, [
                     'name' => $this->field->varchar('Name', $name),
                     'code_version' => $this->field->varchar('Code Version', $codeVersion),
-                    'db_version' => $this->field->varchar('DB Version', $dbVersion),
+                    'db_version' => $this->field->varchar('DB Version', $dbVersion === false ? 'not installed' : $dbVersion),
                 ]);
             } else {
                 $inSyncCount++;

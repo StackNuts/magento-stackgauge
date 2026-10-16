@@ -5,7 +5,8 @@
             "file_path": true,
             "byte_offset": true,
             "running_count": true,
-            "updated_at": true
+            "updated_at": true,
+            "fingerprint": true
         },
         "constraint": {
             "PRIMARY": true,

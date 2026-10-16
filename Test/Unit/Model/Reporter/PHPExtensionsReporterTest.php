@@ -26,4 +26,25 @@ class PHPExtensionsReporterTest extends TestCase
 
         $this->assertFalse($row['enabled']->jsonSerialize()['critical_when']);
     }
+
+    public function testIsLabelledCliAndChecksMagentoRequiredExtensions(): void
+    {
+        $reporter = new PHPExtensionsReporter(new Field(), new Section());
+        $names = array_map(
+            static fn ($row): string => $row->getValue()['name']->getValue(),
+            $reporter->getStatus()['php_extensions']->getRows()
+        );
+
+        $this->assertStringContainsString('CLI', $reporter->getLabel());
+        $this->assertNotContains('json', $names);
+        $this->assertContains('sodium', $names);
+        $this->assertContains('pdo_mysql', $names);
+    }
+
+    public function testCliOpcacheStateIsNotColouredAsAProblem(): void
+    {
+        $settings = (new PHPExtensionsReporter(new Field(), new Section()))->getStatus()['php_settings']->getFields();
+
+        $this->assertNull($settings['opcache_enabled']->jsonSerialize()['critical_when'] ?? null);
+    }
 }

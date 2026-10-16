@@ -8,8 +8,7 @@ declare(strict_types=1);
 
 namespace StackNuts\StackGauge\Model\Reporter;
 
-use Magento\Catalog\Model\Product\Attribute\Source\Status;
-use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
+use Magento\Framework\App\ResourceConnection;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Api\DeclaresSlotInterface;
@@ -21,11 +20,13 @@ use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\Concern\CommerceSectionTrait;
 use StackNuts\StackGauge\Model\Reporter\Concern\DailyCadenceTrait;
+use StackNuts\StackGauge\Model\Util\EnabledProductSql;
 
 /**
- * Enabled product count - a simple "the catalog hasn't been wiped" signal. Uses the product
- * collection rather than hand-rolled SQL since "status" is an EAV attribute, not a flat
- * column; getSize() alone still keeps this a single COUNT(*) query.
+ * Enabled product count - a simple "the catalog hasn't been wiped" signal. One COUNT(*) over
+ * the EAV tables at default scope (see Util\EnabledProductSql) - deliberately not a product
+ * collection, which may be served from the flat tables in the cron area and miss products not
+ * yet reindexed there. A product disabled only on one store view still counts as enabled.
  */
 class CatalogReporter implements ReporterInterface, MetricCatalogInterface, DeclaresCadenceInterface, DeclaresSectionInterface, DeclaresSlotInterface, DeclaresSubjectInterface
 {
@@ -36,12 +37,14 @@ class CatalogReporter implements ReporterInterface, MetricCatalogInterface, Decl
     private const METRIC_PRODUCTS_ENABLED = 'catalog.products_enabled_count';
 
     /**
-     * @param ProductCollectionFactory $productCollectionFactory
+     * @param ResourceConnection $resourceConnection
+     * @param EnabledProductSql $enabledProductSql
      * @param Field $field
      * @param Section $section
      */
     public function __construct(
-        private readonly ProductCollectionFactory $productCollectionFactory,
+        private readonly ResourceConnection $resourceConnection,
+        private readonly EnabledProductSql $enabledProductSql,
         private readonly Field $field,
         private readonly Section $section
     ) {
@@ -80,13 +83,13 @@ class CatalogReporter implements ReporterInterface, MetricCatalogInterface, Decl
     }
 
     /**
-     * Reports the count of enabled products via a single COUNT(*) query on the product collection.
+     * Reports the count of enabled (default-scope status) products via a single COUNT(*) query.
      */
     public function getStatus(): array
     {
-        $enabledCount = $this->productCollectionFactory->create()
-            ->addAttributeToFilter('status', ['eq' => Status::STATUS_ENABLED])
-            ->getSize();
+        $enabledCount = (int) $this->resourceConnection->getConnection()->fetchOne(
+            'SELECT COUNT(*) ' . $this->enabledProductSql->from()
+        );
 
         return ['general' => $this->section->facts('general', 'General', $this->getDescription(), [
             'products_enabled_count' => $this->field->trackableNumber(

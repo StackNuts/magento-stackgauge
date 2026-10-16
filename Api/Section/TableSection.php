@@ -25,6 +25,9 @@ use StackNuts\StackGauge\Api\Field\ArrayField;
  * jsonSerialize() so the dashboard never infers them. $keyName, if every row has a column by
  * that name, is used only to catch a reporter bug (two rows sharing the same name) here at
  * the source - it plays no part in the wire shape, which is always an ordered list of rows.
+ *
+ * More than ArrayField::MAX_ITEMS rows are cut to the first MAX_ITEMS; the wire shape then
+ * carries "truncated": true and its description notes the cut.
  */
 class TableSection implements SectionInterface
 {
@@ -37,6 +40,8 @@ class TableSection implements SectionInterface
      * @var list<array{key: string, label: string}>
      */
     private readonly array $columns;
+
+    private readonly bool $truncated;
 
     /**
      * @param string $key
@@ -52,16 +57,14 @@ class TableSection implements SectionInterface
         array $rows,
         private readonly string $keyName = 'name'
     ) {
-        if (count($rows) > ArrayField::MAX_ITEMS) {
-            throw new InvalidArgumentException(sprintf(
-                'Table section "%s" has %d rows, exceeding the max of %d.',
-                $key,
-                count($rows),
-                ArrayField::MAX_ITEMS
-            ));
-        }
-
         $rows = array_values($rows);
+
+        // Over the cap, keep the first MAX_ITEMS rows and flag it rather than throwing - a store
+        // with hundreds of modules or rules must still report the rest of the reporter.
+        $this->truncated = count($rows) > ArrayField::MAX_ITEMS;
+        if ($this->truncated) {
+            $rows = array_slice($rows, 0, ArrayField::MAX_ITEMS);
+        }
 
         foreach ($rows as $index => $row) {
             if (!$row instanceof ArrayField) {
@@ -193,6 +196,14 @@ class TableSection implements SectionInterface
     }
 
     /**
+     * Whether rows beyond ArrayField::MAX_ITEMS were dropped at construction.
+     */
+    public function isTruncated(): bool
+    {
+        return $this->truncated;
+    }
+
+    /**
      * Column definitions derived from the first row - see this class's own docblock.
      *
      * @return list<array{key: string, label: string}>
@@ -211,7 +222,10 @@ class TableSection implements SectionInterface
             'kind' => $this->getKind(),
             'key' => $this->key,
             'label' => $this->label,
-            'description' => $this->description,
+            'description' => $this->truncated
+                ? trim($this->description . sprintf(' (Truncated: showing the first %d rows.)', ArrayField::MAX_ITEMS))
+                : $this->description,
+            'truncated' => $this->truncated,
             'columns' => $this->columns,
             'rows' => array_map(static fn (ArrayField $row): array => $row->getValue(), $this->rows),
         ];

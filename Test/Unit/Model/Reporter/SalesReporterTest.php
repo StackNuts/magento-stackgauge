@@ -15,11 +15,84 @@ use Magento\Framework\DB\Select;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Field\TrackableNumberField;
 use StackNuts\StackGauge\Api\Section\Section;
+use StackNuts\StackGauge\Model\Config;
 use StackNuts\StackGauge\Model\Reporter\SalesReporter;
 use StackNuts\StackGauge\Model\Util\Clock;
 
 class SalesReporterTest extends TestCase
 {
+    private function config(bool $sendRevenue = true): Config
+    {
+        $config = $this->createMock(Config::class);
+        $config->method('isSendRevenueEnabled')->willReturn($sendRevenue);
+
+        return $config;
+    }
+
+    /**
+     * @param list<array<string, string>> $hourlyRows
+     */
+    private function hourlyReporter(array $hourlyRows, bool $sendRevenue): SalesReporter
+    {
+        $resource = $this->createMock(ResourceConnection::class);
+        $connection = $this->createMock(AdapterInterface::class);
+        $select = $this->createMock(Select::class);
+        foreach (['from', 'where', 'group', 'order', 'joinInner', 'columns'] as $method) {
+            $select->method($method)->willReturnSelf();
+        }
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
+        $connection->method('select')->willReturn($select);
+        $connection->method('quote')->willReturnCallback(fn ($v) => "'".$v."'");
+        $connection->method('fetchOne')->willReturn('0');
+        $connection->method('fetchRow')->willReturn([]);
+        $connection->method('fetchAll')->willReturnOnConsecutiveCalls($hourlyRows, []);
+
+        return new SalesReporter($resource, new Clock(), $this->config($sendRevenue), new Field(), new Section());
+    }
+
+    public function testRevenueIsSplitPerBaseCurrency(): void
+    {
+        $hour = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:00:00');
+        $rows = $this->hourlyReporter([
+            ['hour_bucket' => $hour, 'cnt' => '2', 'currency' => 'GBP', 'revenue' => '50.10'],
+            ['hour_bucket' => $hour, 'cnt' => '1', 'currency' => 'EUR', 'revenue' => '20.00'],
+        ], true)->getStatus()['orders_hourly']->getRows();
+
+        $thisHour = array_values(array_filter(
+            $rows,
+            fn ($r) => $r->getValue()['hour']->getValue() === $hour
+        ));
+        $this->assertCount(2, $thisHour);
+        $this->assertSame('GBP', $thisHour[0]->getValue()['currency']->getValue());
+        $this->assertSame(50.1, $thisHour[0]->getValue()['revenue']->getValue());
+        $this->assertSame('EUR', $thisHour[1]->getValue()['currency']->getValue());
+    }
+
+    public function testRevenueFlagOffOmitsRevenueAndCurrency(): void
+    {
+        $hour = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:00:00');
+        $rows = $this->hourlyReporter([
+            ['hour_bucket' => $hour, 'cnt' => '4'],
+        ], false)->getStatus()['orders_hourly']->getRows();
+
+        foreach ($rows as $row) {
+            $this->assertArrayNotHasKey('revenue', $row->getValue());
+            $this->assertArrayNotHasKey('currency', $row->getValue());
+        }
+        $thisHour = array_values(array_filter($rows, fn ($r) => $r->getValue()['hour']->getValue() === $hour));
+        $this->assertSame(4, $thisHour[0]->getValue()['count']->getValue());
+    }
+
+    public function testFirstHourlyBucketStartsOnAnHourBoundary(): void
+    {
+        $rows = $this->hourlyReporter([], true)->getStatus()['orders_hourly']->getRows();
+
+        $first = $rows[0]->getValue()['hour']->getValue();
+        $this->assertSame(':00:00', substr($first, -6));
+        $this->assertGreaterThanOrEqual(24, count($rows));
+    }
+
     public function testGetStatusReturnsCountsFromDb(): void
     {
         $resource = $this->createMock(ResourceConnection::class);
@@ -45,7 +118,7 @@ class SalesReporterTest extends TestCase
         $connection->method('fetchAll')->willReturn([]);
         $connection->method('fetchRow')->willReturn([]);
 
-        $reporter = new SalesReporter($resource, new Clock(), new Field(), new Section());
+        $reporter = new SalesReporter($resource, new Clock(), $this->config(), new Field(), new Section());
 
         $status = $reporter->getStatus();
         $fields = $status['general']->getFields();
@@ -85,7 +158,7 @@ class SalesReporterTest extends TestCase
             []
         );
 
-        $reporter = new SalesReporter($resource, new Clock(), new Field(), new Section());
+        $reporter = new SalesReporter($resource, new Clock(), $this->config(), new Field(), new Section());
         $status = $reporter->getStatus();
 
         $this->assertArrayHasKey('orders_hourly', $status);
@@ -136,7 +209,7 @@ class SalesReporterTest extends TestCase
         $connection->method('fetchRow')->willReturnOnConsecutiveCalls($orderRateRow, $stuckRow);
         $connection->method('fetchAll')->willReturnOnConsecutiveCalls([], $methodRows);
 
-        return new SalesReporter($resource, new Clock(), new Field(), new Section());
+        return new SalesReporter($resource, new Clock(), $this->config(), new Field(), new Section());
     }
 
     public function testBaselineNormalMakesOrdersVsBaselinePercentTrackable(): void

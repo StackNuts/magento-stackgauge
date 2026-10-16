@@ -60,6 +60,14 @@ class MetricCatalogPool
                         ? $reporter->getCadence()
                         : DeclaresCadenceInterface::CADENCE_HOURLY;
 
+                    if (isset($result[$metric->getMetricKey()])) {
+                        $this->logger->warning(sprintf(
+                            'StackGauge: duplicate metric_key "%s" declared (again by reporter "%s") - the later definition overwrites the earlier one.',
+                            $metric->getMetricKey(),
+                            $reporter->getName()
+                        ));
+                    }
+
                     $result[$metric->getMetricKey()] = $metric->withCadence($cadence);
                 }
             } catch (Throwable $e) {

@@ -78,7 +78,7 @@ class StoreViewsReporter implements ReporterInterface, DeclaresCadenceInterface,
             $currency = (string)$this->scopeConfig->getValue('currency/options/default', 'stores', $id);
             $locale = (string)$this->scopeConfig->getValue('general/locale/code', 'stores', $id);
 
-            $stores[] = $this->field->array('', [
+            $stores[] = $this->field->array((string)$store->getCode(), [
                 'id' => $this->field->number('ID', $id),
                 'code' => $this->field->varchar('Code', (string)$store->getCode()),
                 'name' => $this->field->varchar('Name', (string)$store->getName()),

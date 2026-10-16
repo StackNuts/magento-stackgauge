@@ -14,6 +14,11 @@ use Psr\Log\LoggerInterface;
 use StackNuts\StackGauge\Api\Field\Field;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\PatchReporter;
+use StackNuts\StackGauge\Model\Util\Clock;
+use StackNuts\StackGauge\Model\Util\CommandTimeout;
+use StackNuts\StackGauge\Model\Util\ComposerLockReader;
+use StackNuts\StackGauge\Model\Util\JsonFileCache;
+use StackNuts\StackGauge\Model\Util\LogLineRedactor;
 
 class PatchReporterTest extends TestCase
 {
@@ -57,7 +62,7 @@ class PatchReporterTest extends TestCase
     /**
      * @param Shell|null $shell defaults to a mock whose execute() always returns $shellOutput
      */
-    private function reporter(string $shellOutput, ?Shell $shell = null): PatchReporter
+    private function reporter(string $shellOutput, ?Shell $shell = null, ?int $lockMtime = null): PatchReporter
     {
         $rootRead = $this->createMock(ReadInterface::class);
         $rootRead->method('getAbsolutePath')->willReturn($this->root . '/');
@@ -75,14 +80,24 @@ class PatchReporterTest extends TestCase
             $shell->method('execute')->willReturn($shellOutput);
         }
 
+        $logger = $this->createMock(LoggerInterface::class);
+        $lock = $this->createMock(ComposerLockReader::class);
+        $lock->method('getMtime')->willReturn($lockMtime);
+        $timeout = $this->createMock(CommandTimeout::class);
+        $timeout->method('prefix')->willReturn('timeout 120 ');
+
         return new PatchReporter(
             $filesystem,
             new File(),
             $shell,
             new Json(),
-            $this->createMock(LoggerInterface::class),
+            $logger,
             new Field(),
-            new Section()
+            new Section(),
+            new JsonFileCache($filesystem, new File(), new Json(), new Clock(), $logger),
+            $lock,
+            $timeout,
+            new LogLineRedactor()
         );
     }
 
@@ -213,5 +228,62 @@ class PatchReporterTest extends TestCase
             'RECOVERED-ID',
             $status['applied_patches']->getRows()[0]->getValue()['patch_id']->getValue()
         );
+    }
+
+    public function testRendersCommandWithRootTimeoutAndNoStdin(): void
+    {
+        $rendered = null;
+        $shell = $this->createMock(Shell::class);
+        $shell->method('execute')->willReturnCallback(function (string $cmd, array $args) use (&$rendered) {
+            $rendered = (new \Magento\Framework\Shell\CommandRenderer())->render($cmd, $args);
+
+            return '{"applied_patches":[]}';
+        });
+
+        $this->reporter('', $shell)->getStatus();
+
+        $this->assertSame(
+            sprintf(
+                "{ cd '%1\$s' && timeout 120 '%1\$s/vendor/bin/patch-status' --root='%1\$s' --format=json"
+                . ' < /dev/null 2>/dev/null; } 2>&1',
+                $this->root
+            ),
+            $rendered
+        );
+    }
+
+    public function testKeepsJsonPrintedBeforeANonZeroExit(): void
+    {
+        $shell = $this->createMock(Shell::class);
+        $shell->method('execute')->willThrowException(new \Magento\Framework\Exception\LocalizedException(
+            new \Magento\Framework\Phrase('exit 1'),
+            new \Exception('{"applied_patches":["ACSD-1"]}', 1)
+        ));
+
+        $status = $this->reporter('', $shell)->getStatus();
+
+        $this->assertTrue($status['general']->getFields()['detectable']->getValue());
+        $this->assertSame('ACSD-1', $status['applied_patches']->getRows()[0]->getValue()['patch_id']->getValue());
+    }
+
+    public function testUnrecognizedOutputIsRedactedAndCapped(): void
+    {
+        $output = 'Authorization: Bearer abcdef123456 ' . str_repeat('x', 3000);
+
+        $status = $this->reporter($output)->getStatus();
+        $text = $status['general']->getFields()['unrecognized_output']->getValue();
+
+        $this->assertStringNotContainsString('abcdef123456', $text);
+        $this->assertLessThanOrEqual(1000, strlen($text));
+    }
+
+    public function testComposerLockChangeInvalidatesCache(): void
+    {
+        $shell = $this->createMock(Shell::class);
+        $shell->expects($this->exactly(2))->method('execute')->willReturn('{"applied_patches":["A"]}');
+
+        $this->reporter('', $shell, 100)->getStatus();
+        $this->reporter('', $shell, 100)->getStatus();
+        $this->reporter('', $shell, 200)->getStatus();
     }
 }

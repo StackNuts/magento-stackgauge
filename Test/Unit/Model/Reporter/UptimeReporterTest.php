@@ -61,8 +61,9 @@ class UptimeReporterTest extends TestCase
 
         $stores = [];
         foreach (array_keys($secureBaseUrlsByStoreId) as $storeId) {
-            $store = $this->createMock(StoreInterface::class);
+            $store = $this->createMock(\Magento\Store\Model\Store::class);
             $store->method('getId')->willReturn((int)$storeId);
+            $store->method('getBaseUrl')->willReturn($secureBaseUrlsByStoreId[$storeId]);
             $stores[] = $store;
         }
         $storeManager = $this->createMock(StoreManagerInterface::class);
@@ -239,5 +240,36 @@ class UptimeReporterTest extends TestCase
             'subject' => 'example.test',
             'error' => $trusted ? null : 'Certificate failed verification.',
         ];
+    }
+
+    public function testPlaceholderConfigValueDoesNotSkipTheTlsCheck(): void
+    {
+        $tls = ['attempted' => true, 'connected' => true, 'trusted' => true, 'expires_at' => '2030-01-01T00:00:00+00:00',
+            'days_remaining' => 900, 'issuer' => 'CA', 'subject' => 'shop.example.test', 'error' => null];
+        $probe = $this->createMock(StorefrontProbe::class);
+        $probe->method('probe')->willReturn(self::HEALTHY_PROBE_RESULT);
+        $inspector = $this->createMock(TlsCertificateInspector::class);
+        $inspector->expects($this->once())->method('inspect')->with('shop.example.test')->willReturn($tls);
+
+        $store = $this->createMock(\Magento\Store\Model\Store::class);
+        $store->method('getId')->willReturn(1);
+        $store->method('getBaseUrl')->willReturn('https://shop.example.test/');
+        $storeManager = $this->createMock(StoreManagerInterface::class);
+        $storeManager->method('getStores')->willReturn([$store]);
+        $scopeConfig = $this->createMock(ScopeConfigInterface::class);
+        $scopeConfig->method('getValue')->willReturn('{{secure_base_url}}');
+
+        $maintenance = $this->createMock(MaintenanceMode::class);
+        $maintenance->method('isOn')->willReturn(false);
+
+        (new UptimeReporter(
+            $probe,
+            $maintenance,
+            $inspector,
+            $storeManager,
+            $scopeConfig,
+            new Field(),
+            new Section()
+        ))->getStatus();
     }
 }

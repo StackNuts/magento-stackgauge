@@ -61,4 +61,32 @@ class ComposerLockReaderTest extends TestCase
             $reader->getDecoded()['packages']
         );
     }
+
+    public function testLockIsReadAndDecodedOnlyOncePerInstance(): void
+    {
+        $dir = $this->createMock(ReadInterface::class);
+        $dir->method('isExist')->willReturn(true);
+        $dir->expects($this->once())->method('readFile')->willReturn('{"packages":[]}');
+        $filesystem = $this->createStub(Filesystem::class);
+        $filesystem->method('getDirectoryRead')->willReturn($dir);
+        $reader = new ComposerLockReader($filesystem, new Json());
+
+        $reader->getRawContents();
+        $reader->getDecoded();
+        $reader->getDecoded();
+
+        $this->assertSame(['packages' => []], $reader->getDecoded());
+    }
+
+    public function testGetMtimeReturnsStatMtimeOrNull(): void
+    {
+        $dir = $this->createStub(ReadInterface::class);
+        $dir->method('isExist')->willReturn(true);
+        $dir->method('stat')->willReturn(['mtime' => 1700000000]);
+        $filesystem = $this->createStub(Filesystem::class);
+        $filesystem->method('getDirectoryRead')->willReturn($dir);
+
+        $this->assertSame(1700000000, (new ComposerLockReader($filesystem, new Json()))->getMtime());
+        $this->assertNull($this->readerReturning(null)->getMtime());
+    }
 }

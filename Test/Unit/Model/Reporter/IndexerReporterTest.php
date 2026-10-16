@@ -114,7 +114,7 @@ class IndexerReporterTest extends TestCase
     /**
      * @return array{0: Indexer&MockObject, 1: ResourceConnection&MockObject}
      */
-    private function scheduledIndexerWithBacklog(int $backlog): array
+    private function scheduledIndexerWithBacklog(int $backlog, ?\Throwable $failure = null): array
     {
         $indexer = $this->indexer(
             'catalogsearch_fulltext',
@@ -134,6 +134,7 @@ class IndexerReporterTest extends TestCase
         $changelog->method('setViewId')->willReturnSelf();
         $changelog->method('getVersion')->willReturn(15);
         $changelog->method('getName')->willReturn('catalogsearch_fulltext_cl');
+        $changelog->method('getColumnName')->willReturn('entity_id');
 
         $view = $this->createMock(ViewInterface::class);
         $view->method('getId')->willReturn('catalogsearch_fulltext');
@@ -146,8 +147,14 @@ class IndexerReporterTest extends TestCase
         $select = $this->createMock(Select::class);
         $select->method('from')->willReturnSelf();
         $select->method('where')->willReturnSelf();
+        $select->method('distinct')->willReturnSelf();
+        $select->method('limit')->willReturnSelf();
         $connection->method('select')->willReturn($select);
-        $connection->method('fetchOne')->willReturn((string) $backlog);
+        if ($failure !== null) {
+            $connection->method('fetchOne')->willThrowException($failure);
+        } else {
+            $connection->method('fetchOne')->willReturn((string) $backlog);
+        }
 
         $resourceConnection = $this->createMock(ResourceConnection::class);
         $resourceConnection->method('getConnection')->willReturn($connection);
@@ -192,6 +199,27 @@ class IndexerReporterTest extends TestCase
         $fields = $this->reporter($indexer, $resourceConnection)->getStatus()['indexers']->getRows()[0]->getValue();
 
         $this->assertSame('critical', $fields['schedule_status']->jsonSerialize()['severity']);
+    }
+
+    public function testBacklogIsCappedAndLabelledAsAtLeast(): void
+    {
+        [$indexer, $resourceConnection] = $this->scheduledIndexerWithBacklog(100001);
+
+        $status = $this->reporter($indexer, $resourceConnection)->getStatus();
+        $fields = $status['indexers']->getRows()[0]->getValue();
+
+        $this->assertSame('idle (100000+ in backlog)', $fields['schedule_status']->getValue());
+        $this->assertSame(100000, $status['general']->getFields()['max_backlog_count']->getValue());
+    }
+
+    public function testAFailedBacklogQueryIsUnavailableNotAZeroBacklog(): void
+    {
+        [$indexer, $resourceConnection] = $this->scheduledIndexerWithBacklog(0, new \RuntimeException('no table'));
+
+        $fields = $this->reporter($indexer, $resourceConnection)->getStatus()['indexers']->getRows()[0]->getValue();
+
+        $this->assertStringStartsWith('Unavailable', $fields['schedule_status']->getValue());
+        $this->assertSame('warning', $fields['schedule_status']->jsonSerialize()['severity']);
     }
 
     public function testAnUnscheduledIndexersScheduleStatusHasNoSeverity(): void

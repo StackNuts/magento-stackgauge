@@ -220,6 +220,9 @@ class ReporterPoolTest extends TestCase
             $this->createStub(LoggerInterface::class)
         );
 
+        $result = $pool->collect();
+        unset($result['core']['duration_ms']);
+
         $this->assertEquals(
             [
                 'core' => [
@@ -229,7 +232,7 @@ class ReporterPoolTest extends TestCase
                     'sections' => [$section],
                 ],
             ],
-            $pool->collect()
+            $result
         );
     }
 
@@ -314,7 +317,7 @@ class ReporterPoolTest extends TestCase
         );
 
         $result = $pool->collect();
-        $this->assertSame(['error' => 'boom'], $result['core']);
+        $this->assertSame('boom', $result['core']['error']);
         $this->assertSame('1.0', $result['cron']['schema_version']);
     }
 
@@ -546,5 +549,84 @@ class ReporterPoolTest extends TestCase
         $this->assertSame('s', $fields['own']['unit'], 'A field naming its own unit keeps it.');
         $this->assertArrayNotHasKey('unit', $fields['plain']);
         $this->assertSame(2048, $fields['used']['value'], 'The value itself is untouched.');
+    }
+
+    public function testErrorBlocksAreRedactedAndTruncatedButTheFullMessageIsLogged(): void
+    {
+        $config = $this->createStub(Config::class);
+        $config->method('getDisabledReporterCodes')->willReturn([]);
+
+        $message = "SQLSTATE[23000]: Duplicate entry 'jane@example.com' for key 'EMAIL' from 203.0.113.9 " . str_repeat('x ', 400);
+        $logged = [];
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->method('warning')->willReturnCallback(function (string $m) use (&$logged): void {
+            $logged[] = $m;
+        });
+
+        $result = (new ReporterPool([$this->throwingReporter('db', $message)], $config, $logger))->collect();
+
+        $this->assertLessThanOrEqual(300, mb_strlen($result['db']['error']));
+        $this->assertStringNotContainsString('jane@example.com', $result['db']['error']);
+        $this->assertStringNotContainsString('203.0.113.9', $result['db']['error']);
+        $this->assertStringContainsString('jane@example.com', $logged[0]);
+        $this->assertArrayHasKey('duration_ms', $result['db']);
+    }
+
+    public function testSuccessfulBlocksCarryDurationMs(): void
+    {
+        $config = $this->createStub(Config::class);
+        $config->method('getDisabledReporterCodes')->willReturn([]);
+        $section = $this->factsSection(['edition' => (new Field())->varchar('Edition', 'Community')]);
+
+        $result = (new ReporterPool(
+            [$this->fakeReporter('core', '1.0', ['general' => $section])],
+            $config,
+            $this->createStub(LoggerInterface::class)
+        ))->collect();
+
+        $this->assertIsInt($result['core']['duration_ms']);
+        $this->assertGreaterThanOrEqual(0, $result['core']['duration_ms']);
+    }
+
+    public function testAnUnencodableValueOnlyBreaksThatReportersBlock(): void
+    {
+        $config = $this->createStub(Config::class);
+        $config->method('getDisabledReporterCodes')->willReturn([]);
+        $bad = new class implements \StackNuts\StackGauge\Api\Section\SectionInterface {
+            public function getKey(): string
+            {
+                return 'bad';
+            }
+
+            public function getKind(): string
+            {
+                return 'facts';
+            }
+
+            public function getLabel(): string
+            {
+                return 'Bad';
+            }
+
+            public function getDescription(): string
+            {
+                return '';
+            }
+
+            public function jsonSerialize(): array
+            {
+                return ['ratio' => NAN];
+            }
+        };
+        $good = $this->factsSection(['edition' => (new Field())->varchar('Edition', 'Community')]);
+
+        $result = (new ReporterPool(
+            [$this->fakeReporter('bad', '1.0', ['general' => $bad]), $this->fakeReporter('core', '1.0', ['general' => $good])],
+            $config,
+            $this->createStub(LoggerInterface::class)
+        ))->collect();
+
+        $this->assertArrayHasKey('error', $result['bad']);
+        $this->assertArrayNotHasKey('error', $result['core']);
     }
 }
