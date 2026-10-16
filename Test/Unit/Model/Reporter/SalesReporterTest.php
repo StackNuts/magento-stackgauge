@@ -13,6 +13,7 @@ use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\DB\Select;
 use StackNuts\StackGauge\Api\Field\Field;
+use StackNuts\StackGauge\Api\Field\TrackableNumberField;
 use StackNuts\StackGauge\Api\Section\Section;
 use StackNuts\StackGauge\Model\Reporter\SalesReporter;
 use StackNuts\StackGauge\Model\Util\Clock;
@@ -27,6 +28,10 @@ class SalesReporterTest extends TestCase
         $select = $this->createMock(Select::class);
         $select->method('from')->willReturnSelf();
         $select->method('where')->willReturnSelf();
+        $select->method('group')->willReturnSelf();
+        $select->method('order')->willReturnSelf();
+        $select->method('joinInner')->willReturnSelf();
+        $select->method('columns')->willReturnSelf();
 
         $resource->method('getConnection')->willReturn($connection);
         $resource->method('getTableName')->willReturnArgument(0);
@@ -35,9 +40,10 @@ class SalesReporterTest extends TestCase
         // One mocked connection serves both the orders and quotes lifetime-count queries.
         $connection->method('fetchOne')->willReturn('123');
 
-        // The same connection also backs the hourly-buckets query, which uses fetchAll()
-        // instead of fetchOne().
+        // The same connection also backs the hourly-buckets, baseline and stuck-payment
+        // queries, which use fetchAll()/fetchRow() instead of fetchOne().
         $connection->method('fetchAll')->willReturn([]);
+        $connection->method('fetchRow')->willReturn([]);
 
         $reporter = new SalesReporter($resource, new Clock(), new Field(), new Section());
 
@@ -60,18 +66,24 @@ class SalesReporterTest extends TestCase
         $select->method('from')->willReturnSelf();
         $select->method('where')->willReturnSelf();
         $select->method('group')->willReturnSelf();
+        $select->method('order')->willReturnSelf();
+        $select->method('joinInner')->willReturnSelf();
+        $select->method('columns')->willReturnSelf();
 
         $resource->method('getConnection')->willReturn($connection);
         $resource->method('getTableName')->willReturnArgument(0);
         $connection->method('select')->willReturn($select);
         $connection->method('fetchOne')->willReturn('123');
+        $connection->method('fetchRow')->willReturn([]);
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $hour = $now->format('Y-m-d H:00:00');
 
-        $connection->method('fetchAll')->willReturn([
-            ['hour_bucket' => $hour, 'cnt' => '3', 'revenue' => '123.45'],
-        ]);
+        // First fetchAll() call is hourlyBuckets(), second is stuckPaymentsByMethodRows().
+        $connection->method('fetchAll')->willReturnOnConsecutiveCalls(
+            [['hour_bucket' => $hour, 'cnt' => '3', 'revenue' => '123.45']],
+            []
+        );
 
         $reporter = new SalesReporter($resource, new Clock(), new Field(), new Section());
         $status = $reporter->getStatus();
@@ -88,5 +100,184 @@ class SalesReporterTest extends TestCase
         $fields = $matched->getValue();
         $this->assertSame('datetime', $fields['hour']->getType());
         $this->assertSame(3, $fields['count']->getValue());
+    }
+
+    /**
+     * Builds a reporter wired to a mocked connection whose fetchRow() calls answer, in
+     * order, the orderRateWindows() query then the stuckPendingPaymentWindow() query, and
+     * whose fetchAll() calls answer, in order, the hourlyBuckets() query then the
+     * stuckPaymentsByMethodRows() query - the same call order getStatus() makes them in.
+     *
+     * @param array<string, string> $orderRateRow
+     * @param array<string, string|null> $stuckRow
+     * @param list<array<string, string>> $methodRows
+     */
+    private function reporterWithMocks(
+        array $orderRateRow,
+        array $stuckRow,
+        array $methodRows = []
+    ): SalesReporter {
+        $resource = $this->createMock(ResourceConnection::class);
+        $connection = $this->createMock(AdapterInterface::class);
+
+        $select = $this->createMock(Select::class);
+        $select->method('from')->willReturnSelf();
+        $select->method('where')->willReturnSelf();
+        $select->method('group')->willReturnSelf();
+        $select->method('order')->willReturnSelf();
+        $select->method('joinInner')->willReturnSelf();
+        $select->method('columns')->willReturnSelf();
+
+        $resource->method('getConnection')->willReturn($connection);
+        $resource->method('getTableName')->willReturnArgument(0);
+        $connection->method('select')->willReturn($select);
+
+        $connection->method('fetchOne')->willReturn('123');
+        $connection->method('fetchRow')->willReturnOnConsecutiveCalls($orderRateRow, $stuckRow);
+        $connection->method('fetchAll')->willReturnOnConsecutiveCalls([], $methodRows);
+
+        return new SalesReporter($resource, new Clock(), new Field(), new Section());
+    }
+
+    public function testBaselineNormalMakesOrdersVsBaselinePercentTrackable(): void
+    {
+        $reporter = $this->reporterWithMocks(
+            [
+                'current_count' => '15',
+                'week_7' => '10',
+                'week_14' => '12',
+                'week_21' => '8',
+                'week_28' => '10',
+            ],
+            ['total_count' => '0', 'stuck_count' => '0', 'oldest_stuck_created_at' => null]
+        );
+
+        $fields = $reporter->getStatus()['baseline']->getFields();
+
+        // Baseline average = (10+12+8+10)/4 = 10.0, current = 15 -> 150%.
+        $this->assertSame(10.0, $fields['baseline_average']->getValue());
+        $this->assertTrue($fields['baseline_sufficient']->getValue());
+        $this->assertInstanceOf(TrackableNumberField::class, $fields['orders_vs_baseline_percent']);
+        $this->assertSame(150.0, $fields['orders_vs_baseline_percent']->getValue());
+        $this->assertSame('sales.orders_vs_baseline_percent', $fields['orders_vs_baseline_percent']->getMetricKey());
+    }
+
+    public function testBaselineBelowThresholdStaysTrackableWithLowValue(): void
+    {
+        $reporter = $this->reporterWithMocks(
+            [
+                'current_count' => '2',
+                'week_7' => '10',
+                'week_14' => '12',
+                'week_21' => '8',
+                'week_28' => '10',
+            ],
+            ['total_count' => '0', 'stuck_count' => '0', 'oldest_stuck_created_at' => null]
+        );
+
+        $fields = $reporter->getStatus()['baseline']->getFields();
+
+        // Baseline average is still 10.0 (sufficient), current = 2 -> 20%, well below the
+        // default alert threshold of 50 - still a trackable metric, just a low value.
+        $this->assertTrue($fields['baseline_sufficient']->getValue());
+        $this->assertInstanceOf(TrackableNumberField::class, $fields['orders_vs_baseline_percent']);
+        $this->assertSame(20.0, $fields['orders_vs_baseline_percent']->getValue());
+    }
+
+    public function testBaselineInsufficientIsNotTrackable(): void
+    {
+        $reporter = $this->reporterWithMocks(
+            [
+                'current_count' => '1',
+                'week_7' => '2',
+                'week_14' => '1',
+                'week_21' => '0',
+                'week_28' => '1',
+            ],
+            ['total_count' => '0', 'stuck_count' => '0', 'oldest_stuck_created_at' => null]
+        );
+
+        $fields = $reporter->getStatus()['baseline']->getFields();
+
+        // Baseline average = (2+1+0+1)/4 = 1.0, below BASELINE_MIN_ORDERS (5) - the field
+        // must stay a plain number, not a TrackableNumberField, so it's never alerted on.
+        $this->assertSame(1.0, $fields['baseline_average']->getValue());
+        $this->assertFalse($fields['baseline_sufficient']->getValue());
+        $this->assertNotInstanceOf(TrackableNumberField::class, $fields['orders_vs_baseline_percent']);
+        $this->assertSame('number', $fields['orders_vs_baseline_percent']->getType());
+    }
+
+    public function testStuckPendingPaymentPercentTrackableWithEnoughOrders(): void
+    {
+        $oldestStuckAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            ->modify('-5 hours')
+            ->format('Y-m-d H:i:s');
+
+        $reporter = $this->reporterWithMocks(
+            ['current_count' => '0', 'week_7' => '0', 'week_14' => '0', 'week_21' => '0', 'week_28' => '0'],
+            ['total_count' => '20', 'stuck_count' => '5', 'oldest_stuck_created_at' => $oldestStuckAt]
+        );
+
+        $fields = $reporter->getStatus()['stuck_pending_payment']->getFields();
+
+        // 5 / 20 * 100 = 25%, and total (20) clears STUCK_PENDING_PAYMENT_MIN_ORDERS (5).
+        $this->assertSame(5, $fields['stuck_count']->getValue());
+        $this->assertSame(20, $fields['total_orders_in_window']->getValue());
+        $this->assertInstanceOf(TrackableNumberField::class, $fields['stuck_pending_payment_percent']);
+        $this->assertSame(25.0, $fields['stuck_pending_payment_percent']->getValue());
+        $this->assertSame(
+            'sales.stuck_pending_payment_percent',
+            $fields['stuck_pending_payment_percent']->getMetricKey()
+        );
+        $this->assertGreaterThan(0, $fields['oldest_stuck_order_age_minutes']->getValue());
+    }
+
+    public function testStuckPendingPaymentPercentNotTrackableWithoutEnoughOrders(): void
+    {
+        $reporter = $this->reporterWithMocks(
+            ['current_count' => '0', 'week_7' => '0', 'week_14' => '0', 'week_21' => '0', 'week_28' => '0'],
+            ['total_count' => '2', 'stuck_count' => '1', 'oldest_stuck_created_at' => null]
+        );
+
+        $fields = $reporter->getStatus()['stuck_pending_payment']->getFields();
+
+        // Total orders in window (2) is below STUCK_PENDING_PAYMENT_MIN_ORDERS (5) - stays a
+        // plain number so a near-empty store doesn't alert on one stuck order.
+        $this->assertSame(2, $fields['total_orders_in_window']->getValue());
+        $this->assertNotInstanceOf(TrackableNumberField::class, $fields['stuck_pending_payment_percent']);
+        $this->assertSame('number', $fields['stuck_pending_payment_percent']->getType());
+        $this->assertSame(0, $fields['oldest_stuck_order_age_minutes']->getValue());
+    }
+
+    public function testStuckPaymentsByMethodRowsFromDb(): void
+    {
+        $reporter = $this->reporterWithMocks(
+            ['current_count' => '0', 'week_7' => '0', 'week_14' => '0', 'week_21' => '0', 'week_28' => '0'],
+            ['total_count' => '0', 'stuck_count' => '0', 'oldest_stuck_created_at' => null],
+            [
+                ['method' => 'checkmo', 'stuck_count' => '3', 'oldest_created_at' => '2026-10-15 08:00:00'],
+                ['method' => 'braintree', 'stuck_count' => '1', 'oldest_created_at' => '2026-10-15 12:00:00'],
+            ]
+        );
+
+        $rows = $reporter->getStatus()['stuck_payments']->getRows();
+
+        $this->assertCount(2, $rows);
+
+        $byMethod = [];
+        foreach ($rows as $row) {
+            $fields = $row->getValue();
+            $byMethod[$fields['method']->getValue()] = $fields;
+        }
+
+        $this->assertArrayHasKey('checkmo', $byMethod);
+        $this->assertSame(3, $byMethod['checkmo']['stuck_count']->getValue());
+        $this->assertSame('2026-10-15 08:00:00', $byMethod['checkmo']['oldest_created_at']->getValue());
+
+        $this->assertArrayHasKey('braintree', $byMethod);
+        $this->assertSame(1, $byMethod['braintree']['stuck_count']->getValue());
+
+        // No customer data, increment IDs, or amounts should ever be selected.
+        $this->assertSame(['method', 'stuck_count', 'oldest_created_at'], array_keys($byMethod['checkmo']));
     }
 }

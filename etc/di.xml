@@ -48,6 +48,7 @@
                 <item name="db_queue" xsi:type="object">StackNuts\StackGauge\Model\Reporter\DbQueueReporter</item>
                 <item name="uptime" xsi:type="object">StackNuts\StackGauge\Model\Reporter\UptimeReporter</item>
                 <item name="disk" xsi:type="object">StackNuts\StackGauge\Model\Reporter\DiskSpaceReporter</item>
+                <item name="server" xsi:type="object">StackNuts\StackGauge\Model\Reporter\ServerResourcesReporter</item>
                 <item name="database" xsi:type="object">StackNuts\StackGauge\Model\Reporter\DatabaseReporter</item>
                 <item name="sales" xsi:type="object">StackNuts\StackGauge\Model\Reporter\SalesReporter</item>
                 <item name="logs" xsi:type="object">StackNuts\StackGauge\Model\Reporter\LogReporter</item>

@@ -73,10 +73,11 @@ data. Full detail on exact fields lives in the dashboard's own documentation.
 | `SearchReporter` | `search` | Configured search engine and whether it's actually reachable (Elasticsearch/OpenSearch only) |
 | `RabbitMqReporter` | `rabbitmq` | Per-queue message/consumer count, if RabbitMQ is configured |
 | `DbQueueReporter` | `db_queue` | Per-queue backlog and error count for every queue routed through the "db" message-queue connection |
-| `UptimeReporter` | `uptime` | Hourly storefront self-probe result (reachable / blocked / genuine error page) - see "Storefront self-probe" |
+| `UptimeReporter` | `uptime` | Hourly storefront self-probe result (reachable / blocked / genuine error page) plus TLS certificate expiry/trust on this store's own https host(s) - see "Storefront self-probe" |
 | `DiskSpaceReporter` | `disk` | Free/total bytes for `var/log`, `var/cache`, and media, checked independently |
+| `ServerResourcesReporter` | `server` | Load average, CPU core count/busy percent, and memory/swap usage from procfs, with cgroup v2 limits honoured in a container |
 | `DatabaseReporter` | `database` | MySQL/MariaDB version and reachability |
-| `SalesReporter` | `sales` | Lifetime order/quote counts, plus hourly order counts and revenue for the recent window |
+| `SalesReporter` | `sales` | Lifetime order/quote counts, hourly order counts and revenue, order rate vs the usual rate for this time of week, and stuck pending-payment orders by payment method |
 | `CatalogReporter` | `catalog` | Enabled product count |
 | `CouponsReporter` | `coupons` | Active cart price rules and their lifetime redemption counts |
 | `InventoryReporter` | `inventory` | Basic in-stock/out-of-stock counts |
@@ -88,7 +89,7 @@ data. Full detail on exact fields lives in the dashboard's own documentation.
 | `ThemeReporter` | `themes` | Active frontend and admin themes |
 | `PHPExtensionsReporter` | `php_extensions` | Presence and versions of important PHP extensions |
 | `LogReporter` | `logs` | Recent log activity and exception summaries for the files configured under Monitored Log Files |
-| `ReportReporter` | `reports` | Recent `var/report` summaries |
+| `ReportReporter` | `reports` | Counts (last hour / 24h) of `var/report` fatal-error reports (storefront and API), the 5 newest with a distilled message and URL path, and the most frequent messages from the last 24h |
 
 Security-posture reporters (`SecurityReporter`, `AdminAccountsReporter`, `ConfigHygieneReporter`)
 live in the optional [`StackNuts_StackGaugeSecurity`](https://github.com/StackNuts/magento-stackgauge-security)
@@ -132,6 +133,22 @@ list of sensitive paths (`.git/HEAD`, `composer.lock`, `app/etc/env.php`, etc.) 
 exposure once a day - but nothing in core StackGauge calls it. It's consumed by
 `StackNuts_StackGaugeSecurity`'s `SecurityReporter`, if that optional companion module is
 installed; see "Security module" below.
+
+`UptimeReporter` also checks TLS certificate expiry once an hour, alongside its copy of the
+self-probe above - deliberately not part of the heartbeat, since a certificate's expiry moves
+on the order of weeks, not minutes. `Model\TlsCertificateInspector` opens a direct TLS
+connection (with SNI) to port 443 of every distinct host this store's `web/secure/base_url`
+resolves to across all store views (capped at 10 hosts; a plain-http dev site with no https
+base URL at all simply isn't checked), from this server rather than the dashboard - the same
+reasoning as the self-probe: a dev store behind a VPN or firewall that blocks the dashboard's
+own IP still gets a real answer. It verifies the certificate the way a browser would first;
+if that fails (e.g. self-signed, or an incomplete/expired chain), it retries once with
+verification off purely to keep the expiry readable, and reports that host's certificate as
+untrusted. The `tls` section lists every checked host's trust state, expiry, issuer, and any
+error; the shortest days-remaining across every host that connected also goes out as a
+trackable metric (`uptime.tls_days_remaining`), and any untrusted certificate as a separate
+finding (`uptime.tls_untrusted_certificate`) - which will fire on an intentionally self-signed
+dev/staging certificate, so disable that one rule per site if that's not useful to you.
 
 ## Security module
 
