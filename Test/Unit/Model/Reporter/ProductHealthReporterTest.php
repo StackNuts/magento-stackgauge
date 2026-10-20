@@ -81,13 +81,11 @@ class ProductHealthReporterTest extends TestCase
         }
         $this->assertSame([
             'product_health.missing_image_count',
-            'product_health.no_price_count',
             'product_health.no_website_count',
             'product_health.composite_unbuyable_count',
         ], array_keys($metrics));
         $this->assertArrayNotHasKey('product_health.configurable_out_of_stock_count', $metrics);
         $this->assertSame(20, $metrics['product_health.missing_image_count']->getDefaultThreshold());
-        $this->assertSame(5, $metrics['product_health.no_price_count']->getDefaultThreshold());
         $this->assertSame(0, $metrics['product_health.no_website_count']->getDefaultThreshold());
         $this->assertSame(0, $metrics['product_health.composite_unbuyable_count']->getDefaultThreshold());
     }

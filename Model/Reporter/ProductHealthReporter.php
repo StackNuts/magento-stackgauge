@@ -36,7 +36,6 @@ class ProductHealthReporter implements
 
     private const SCHEMA_VERSION = '2.0';
     private const METRIC_MISSING_IMAGE = 'product_health.missing_image_count';
-    private const METRIC_NO_PRICE = 'product_health.no_price_count';
     private const METRIC_NO_WEBSITE = 'product_health.no_website_count';
     private const METRIC_COMPOSITE_UNBUYABLE = 'product_health.composite_unbuyable_count';
 
@@ -45,7 +44,9 @@ class ProductHealthReporter implements
      */
     private const CHECKS = [
         Q::CHECK_MISSING_IMAGE => ['Missing Image', 'Products missing an image', self::METRIC_MISSING_IMAGE, true],
-        Q::CHECK_NO_PRICE => ['No Price', 'Products without a price', self::METRIC_NO_PRICE, true],
+        // Display-only: it also counts not-visible children and free items priced at zero, and the products that
+        // actually can't be bought are already alerted on by pricing.zero_final_price_count.
+        Q::CHECK_NO_PRICE => ['No Price', 'Products without a price', null, true],
         Q::CHECK_MISSING_DESCRIPTION => ['Missing Description', 'Products missing a description', null, true],
         Q::CHECK_MISSING_META_DESCRIPTION => ['Missing Meta Description', '', null, false],
         Q::CHECK_NO_WEBSITE => ['No Website', 'Enabled products not in any website', self::METRIC_NO_WEBSITE, true],
@@ -135,7 +136,7 @@ class ProductHealthReporter implements
     }
 
     /**
-     * Alertable metrics: missing-image, no-price, no-website and unbuyable-composite product counts.
+     * Alertable metrics: missing-image, no-website and unbuyable-composite product counts.
      */
     public function getTrackableMetrics(): array
     {
@@ -151,17 +152,6 @@ class ProductHealthReporter implements
                 null,
                 description: '{value} products have no image, above the limit of {threshold}.',
                 impact: 'Customers see broken or unappealing product pages.'
-            ),
-            new MetricDefinition(
-                self::METRIC_NO_PRICE,
-                'No Price',
-                MetricDefinition::AGGREGATION_LATEST,
-                MetricDefinition::OPERATOR_GT,
-                5,
-                1500,
-                null,
-                description: '{value} products have no price, above the limit of {threshold}.',
-                impact: 'Customers cannot buy products without a price.'
             ),
             new MetricDefinition(
                 self::METRIC_NO_WEBSITE,

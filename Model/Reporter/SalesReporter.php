@@ -219,10 +219,11 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
                 'Orders (Lifetime)',
                 MetricDefinition::AGGREGATION_DELTA,
                 MetricDefinition::OPERATOR_LT,
-                5,
+                // "None at all": a quiet store legitimately takes only a handful of orders in six hours.
+                1,
                 360,
                 null,
-                description: 'Fewer than {threshold} new orders in the last {window} (currently {value}; counted as growth of the highest order id).',
+                description: 'No new orders in the last {window} (counted as growth of the highest order id).',
                 impact: 'Checkout may be broken, or the store is not getting traffic.'
             ),
             new MetricDefinition(
@@ -230,10 +231,10 @@ class SalesReporter implements ReporterInterface, MetricCatalogInterface, Declar
                 'Quotes With Items (Lifetime)',
                 MetricDefinition::AGGREGATION_DELTA,
                 MetricDefinition::OPERATOR_LT,
-                3,
+                1,
                 360,
                 null,
-                description: 'Fewer than {threshold} new baskets in the last {window} (currently {value}; counted as growth of the highest quote id).',
+                description: 'No new baskets in the last {window} (counted as growth of the highest quote id).',
                 impact: 'Customers may not be able to add products to the basket.'
             ),
             new MetricDefinition(

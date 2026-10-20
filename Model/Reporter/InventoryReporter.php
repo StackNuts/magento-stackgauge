@@ -15,6 +15,7 @@ use StackNuts\StackGauge\Api\MetricCatalogInterface;
 use StackNuts\StackGauge\Api\MetricDefinition;
 use StackNuts\StackGauge\Api\ReporterInterface;
 use StackNuts\StackGauge\Api\Section\Section;
+use StackNuts\StackGauge\Api\Unit;
 use StackNuts\StackGauge\Api\DeclaresCadenceInterface;
 use StackNuts\StackGauge\Api\DeclaresSectionInterface;
 use StackNuts\StackGauge\Model\Reporter\Concern\CommerceSectionTrait;
@@ -40,7 +41,7 @@ class InventoryReporter implements ReporterInterface, DeclaresCadenceInterface, 
     use CommerceSectionTrait;
 
     private const SCHEMA_VERSION = '1.0';
-    private const METRIC_OUT_OF_STOCK = 'inventory.out_of_stock_count';
+    private const METRIC_OUT_OF_STOCK_PERCENT = 'inventory.out_of_stock_percent';
     private const XML_PATH_MANAGE_STOCK = 'cataloginventory/item_options/manage_stock';
     private const DEFAULT_STOCK_ID = 1;
 
@@ -115,36 +116,48 @@ class InventoryReporter implements ReporterInterface, DeclaresCadenceInterface, 
             . "AND IF(si.use_config_manage_stock = 1, {$manageStockDefault}, si.manage_stock) = 1"
         );
 
-        return ['general' => $this->section->facts('general', 'General', $this->getDescription(), [
+        $inStock = (int) ($row['in_stock'] ?? 0);
+        $outOfStock = (int) ($row['out_of_stock'] ?? 0);
+        $stockManaged = $inStock + $outOfStock;
+
+        $facts = [
             'total_products' => $this->field->number('Total Products', $total),
-            'in_stock' => $this->field->number('In Stock', (int) ($row['in_stock'] ?? 0)),
-            'out_of_stock' => $this->field->trackableNumber(
-                'Out of Stock',
-                (int) ($row['out_of_stock'] ?? 0),
-                self::METRIC_OUT_OF_STOCK,
-                MetricDefinition::AGGREGATION_LATEST
-            ),
-        ])];
+            'in_stock' => $this->field->number('In Stock', $inStock),
+            'out_of_stock' => $this->field->number('Out of Stock', $outOfStock),
+        ];
+        // A share of the stock-managed catalogue rather than a count: 50 out of stock is alarming in a catalogue
+        // of 60 and nothing at all in one of 60,000.
+        if ($stockManaged > 0) {
+            $facts['out_of_stock_percent'] = $this->field->trackableNumber(
+                'Out of Stock (% of stock-managed)',
+                round(($outOfStock / $stockManaged) * 100, 2),
+                self::METRIC_OUT_OF_STOCK_PERCENT,
+                MetricDefinition::AGGREGATION_LATEST,
+                unit: Unit::PERCENT
+            );
+        }
+
+        return ['general' => $this->section->facts('general', 'General', $this->getDescription(), $facts)];
     }
 
     /**
-     * Alertable metric for the inventory reporter: out-of-stock product count.
+     * Alertable metric for the inventory reporter: the out-of-stock share of stock-managed products.
      */
     public function getTrackableMetrics(): array
     {
         return [
             // Window comfortably outlives the ~24h gap between daily-cadence samples.
-            // Threshold is a rough default - catalog sizes vary hugely.
             new MetricDefinition(
-                self::METRIC_OUT_OF_STOCK,
+                self::METRIC_OUT_OF_STOCK_PERCENT,
                 'Inventory: Out of Stock',
                 MetricDefinition::AGGREGATION_LATEST,
                 MetricDefinition::OPERATOR_GT,
-                50,
+                25,
                 1500,
                 null,
-                description: '{value} products are out of stock, above the limit of {threshold}.',
-                impact: 'Customers see unbuyable products, which loses sales.'
+                description: '{value} of stock-managed products are out of stock, above the limit of {threshold}.',
+                impact: 'Customers see unbuyable products, which loses sales.',
+                unit: Unit::PERCENT
             ),
         ];
     }

@@ -181,12 +181,14 @@ class IndexerReporter implements ReporterInterface, MetricCatalogInterface, Decl
                 'Indexers: Max Backlog',
                 MetricDefinition::AGGREGATION_LATEST,
                 MetricDefinition::OPERATOR_GT,
-                100,
+                // A few hundred queued changes is a normal import or price update being worked through; only a
+                // backlog this large means the indexer is falling behind rather than draining.
+                1000,
                 15,
                 null,
                 description: 'An indexer has {value} changes waiting, above the limit of {threshold}.',
                 impact: 'The storefront may show stale prices, stock and catalogue data.',
-                criticalThreshold: 5000
+                criticalThreshold: 20000
             ),
         ];
     }

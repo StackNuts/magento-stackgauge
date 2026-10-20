@@ -60,7 +60,9 @@ class InventoryReporterTest extends TestCase
         $this->assertSame(10, $fields['total_products']->getValue());
         $this->assertSame(7, $fields['in_stock']->getValue());
         $this->assertSame(2, $fields['out_of_stock']->getValue());
-        $this->assertSame('inventory.out_of_stock_count', $fields['out_of_stock']->getMetricKey());
+        // 2 of the 9 stock-managed products.
+        $this->assertSame(22.22, $fields['out_of_stock_percent']->getValue());
+        $this->assertSame('inventory.out_of_stock_percent', $fields['out_of_stock_percent']->getMetricKey());
     }
 
     public function testQueryCountsOnlyEnabledStockManagedSellableTypesOnTheDefaultStock(): void
@@ -89,6 +91,7 @@ class InventoryReporterTest extends TestCase
         $metrics = $this->reporter($sql)->getTrackableMetrics();
 
         $this->assertCount(1, $metrics);
-        $this->assertSame('inventory.out_of_stock_count', $metrics[0]->getMetricKey());
+        $this->assertSame('inventory.out_of_stock_percent', $metrics[0]->getMetricKey());
+        $this->assertSame(25, $metrics[0]->getDefaultThreshold());
     }
 }
